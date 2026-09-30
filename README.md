@@ -250,8 +250,9 @@ context, and what the summary kept cannot be checked. Right after that, before t
 [`codex/fact-sheet.ts`](codex/fact-sheet.ts) is such a hook. It reads the session rollout and saves each long tool
 output in full, secret values masked, under `<CODEX_HOME>/fast-jev/cache/<session>/` (30 days). It returns a fact
 sheet sized at 5% of the model's window: the newest outputs verbatim within half of it, older ones as their fact lines
-(the rules of the Claude Code hook; a reproducible read becomes a re-run line), the oldest as one line each, and the
-path of `facts.md`, which lists them all. It makes no Jev call and takes tens of milliseconds.
+(the regex fact patterns of the Claude Code hook for half of each call's line budget, the rest by compressibility; a
+reproducible read becomes a re-run line), the oldest as one line each, and the path of `facts.md`, which lists them all.
+It makes no Jev call and takes tens of milliseconds.
 
 Install: `npm install` in a checkout, then add a group at the **end** of `SessionStart` in `~/.codex/hooks.json`
 (Codex keys hook trust by position, so a group inserted earlier un-trusts the ones after it) and trust it in `/hooks`:

@@ -165,3 +165,31 @@ like the raw tail, and fact lines for older calls took the room the newest outpu
 the model's window (165 680 chars for an 828k-token window) and filled it newest first, verbatim before fact lines.
 All six facts it kept and the tail lost come from one rollout, the one with the most output (563k chars); in the other
 three the budget covered the facts either way. The hook ran in 36–114 ms.
+
+### Line selection: compressibility against regex (rounds 10–12)
+
+The sheet reduces most calls to their fact lines, chosen so far by the regex fact patterns. An alternative scores each
+200-char chunk by its deflate size with the preceding 32 KB of the same output as dictionary (a minimum-description-length
+proxy): ids, hashes, verdicts and errors do not compress against what came before, repeated rows and boilerplate do.
+The rule was fixed before any run. "Hybrid" = regex fact lines within half the budget, then those chunks.
+
+| round | data | budget per output | regex | compressibility | hybrid | result |
+|---|---|---|---|---|---|---|
+| 10 (screening, seen facts) | 421 facts, 41 transcripts | 10% | 39.2% | 51.8% | — | +12.6 pts, cluster CI [+6.0, +19.7] |
+| 11 (blind) | 196 facts, 21 transcripts | 10% | 33.7% | 41.8% | — | +8.2 pts, p = .072, CI [0.0, +16.4]: not confirmed |
+| 12 (blind, larger) | 404 facts, 23 transcripts, 12 sessions | 10% | 40.6% | 51.2% | 52.0% | +10.6 and +11.4 pts, p = 8e-4 and 2e-5 (Holm), CI by session [+4.3, +17.4] and [+6.4, +17.1] |
+
+In the whole sheet (600 facts of rounds 11–12, preregistered) the hybrid keeps 91.0% against 90.2% at 165k chars
+(CI [−0.5, +2.8], non-inferior at the same size) and 73.5% against 72.0% at 50k (not significant): most facts sit in
+outputs the sheet keeps verbatim, and the selector only acts on the rest. The sheet uses the hybrid since then. Against a
+simple baseline at the same size (one line per call plus the newest outputs verbatim) the sheet keeps +22.7 pts at 50k
+and +9.8 at 165k.
+
+### Clustering and power
+
+Facts from one transcript or session are correlated. On the Codex rounds 8–9 the intra-transcript correlation was about
+0.16 with ~14 facts per transcript, a design effect of ~3: the naive intervals and McNemar p-values in rounds 8–9 (and,
+to a lesser degree, in the earlier rounds, whose correlation was not measured) are too narrow by up to ~√3. Round 9's
+p = .031 comes from one rollout and is weak evidence. Rounds 10–12 report bootstrap intervals clustered by transcript or
+session; their correlation was small (0.01–0.04). A four-transcript round can only detect effects of 40–50 points; round
+12 was sized for a 10-point effect.
