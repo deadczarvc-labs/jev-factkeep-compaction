@@ -1,21 +1,43 @@
-# fast-jev-compaction
+<div align="center">
 
-> **Fact-keeping fork of [tamaratran/fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction)**
-> (plugin `fast-jev-compaction` 0.3.0-astra.6, a drop-in replacement). The upstream goal is to drop what
-> re-running a tool would give back and never lose an exact error, path or command. Upstream erases every call
-> Jev scores as stale, observations of the world included. Here nothing is erased:
->
-> - a reproducible read of files (`Read`, `Grep`, `Glob`, `ls`, `cat`, `rg`, `git log`…) longer than 3000 chars
->   shrinks to a one-line re-run note;
-> - any other result keeps its head, its fact lines (errors, HTTP codes, paths, versions, ids, endpoints,
->   counts, receipts; up to 30% of its size), its tail and a pointer to the full output in the transcript;
->   results up to 6000 chars, dense dumps and error heads are never cut;
-> - rail tiers keep the token reduction above the hook's 25% fallback to the built-in summary.
->
-> Blind held-out round 4 (5 new transcripts, 75 preregistered facts, real Jev): 70/75 facts kept against 8/75
-> upstream, 58% token reduction against 93%. Method and all rounds: [docs/evidence.md](docs/evidence.md).
-> Where and why upstream loses facts, with proofs and data: [docs/why-facts-are-lost.md](docs/why-facts-are-lost.md).
-> The same rules run in Hermes Agent: [deadczarvc/hermes-jev-compaction](https://github.com/deadczarvc/hermes-jev-compaction).
+# jev-factkeep-compaction
+
+**Jev-guided context compaction for Claude Code that never erases a tool call: reproducible reads shrink to a
+note, observations keep their errors, ids, codes and counts.**
+
+[![CI](https://github.com/deadczarvc-labs/jev-factkeep-compaction/actions/workflows/ci.yml/badge.svg)](https://github.com/deadczarvc-labs/jev-factkeep-compaction/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/deadczarvc-labs/jev-factkeep-compaction?include_prereleases&sort=semver)](https://github.com/deadczarvc-labs/jev-factkeep-compaction/releases/latest)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Upstream PR](https://img.shields.io/badge/upstream-PR%20%23118-6e40c9)](https://github.com/tamaratran/fast-jev-compaction/pull/118)
+
+[Why facts are lost](docs/why-facts-are-lost.md) · [Evidence](docs/evidence.md) · [Install](#install-in-claude-code) · [Hermes port](https://github.com/deadczarvc/hermes-jev-compaction) · [Upstream](https://github.com/tamaratran/fast-jev-compaction)
+
+</div>
+
+## Why this fork
+
+A fork of [tamaratran/fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction). The plugin keeps the
+upstream id `fast-jev-compaction` (0.3.0-astra.6), so it replaces an upstream install as is.
+
+The upstream goal is to drop what re-running a tool would give back and never lose an exact error, path or command.
+Upstream erases every call Jev scores as stale, observations of the world included. Here nothing is erased:
+
+- a reproducible read of files (`Read`, `Grep`, `Glob`, `ls`, `cat`, `rg`, `git log`…) longer than 3000 chars
+  shrinks to a one-line re-run note;
+- any other result keeps its head, its fact lines (errors, HTTP codes, paths, versions, ids, endpoints, counts,
+  receipts; up to 30% of its size), its tail and a pointer to the full output in the transcript; results up to
+  6000 chars, dense dumps and error heads are never cut;
+- rail tiers keep the token reduction above the hook's 25% fallback to the built-in summary.
+
+| blind held-out rounds, 21 transcripts | facts kept | tokens left after compaction (current rules) |
+|---|---|---|
+| upstream 0.3.0 | 34 / 286 | 7–9% |
+| this fork | 254 / 286 | 42–44% |
+
+Where and why upstream loses facts, with proofs and per-call data: [docs/why-facts-are-lost.md](docs/why-facts-are-lost.md).
+Method and every round: [docs/evidence.md](docs/evidence.md).
+
+## About the engine
 
 Claude Code plugin that replaces the compaction summary with Jev decisions:
 every tool call and result is scored in one fast request, stale ones are
