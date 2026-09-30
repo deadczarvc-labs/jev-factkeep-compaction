@@ -203,6 +203,34 @@ export interface Digest {
   total: number;
 }
 
+/**
+ * Context around each compaction in the rollout (JEV-CMP-23 H-C): `before` = the last request's input tokens before it,
+ * `after` = the first request's after it (null for the one that just happened); `reads` = tool calls that open a saved
+ * output of this hook (`fast-jev` + `cache` in the command). Logged so the budget can later follow the measured level.
+ */
+export function compactionStats(jsonl: string, calls: readonly CodexCall[]): { before: number[]; after: Array<number | null>; reads: number } {
+  const before: number[] = [];
+  const after: Array<number | null> = [];
+  let last = 0;
+  let waiting = false;
+  for (const line of jsonl.split('\n')) {
+    if (line.includes('"compacted"') && /"type"\s*:\s*"compacted"/.test(line)) {
+      before.push(last);
+      after.push(null);
+      waiting = true;
+      continue;
+    }
+    const m = line.includes('"token_count"') ? /"last_token_usage"\s*:\s*\{[^}]*"input_tokens"\s*:\s*(\d+)/.exec(line) : null;
+    if (!m || Number(m[1]) === 0) continue;
+    last = Number(m[1]);
+    if (waiting) {
+      after[after.length - 1] = last;
+      waiting = false;
+    }
+  }
+  return { before, after, reads: calls.filter((c) => /fast-jev/i.test(c.command) && /cache/i.test(c.command)).length };
+}
+
 /** The model's context window in tokens, as the rollout last reports it. */
 export function contextWindow(jsonl: string): number | undefined {
   const found = [...jsonl.matchAll(/"model_context_window"\s*:\s*(\d+)/g)].pop();

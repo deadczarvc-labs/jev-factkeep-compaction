@@ -12,7 +12,7 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSyn
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { budgetFor, buildDigest, contextWindow, parseRollout, SMALL_OUTPUT } from '../src/codex.js';
+import { budgetFor, buildDigest, compactionStats, contextWindow, parseRollout, SMALL_OUTPUT } from '../src/codex.js';
 import { redactSecrets } from '../src/secrets.js';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -71,7 +71,11 @@ export function run(input: HookInput, env: NodeJS.ProcessEnv = process.env): str
   const digest = buildDigest(calls, Number(env['FJC_CODEX_BUDGET']) || budgetFor(contextWindow(rollout)), (id) => saved.get(id), sheet);
   if (sheet) writeFileSync(sheet, redactSecrets(digest.full), 'utf8');
   mkdirSync(root, { recursive: true });
-  appendFileSync(join(root, 'log.jsonl'), `${JSON.stringify({ ts: new Date().toISOString(), session: input.session_id, calls: digest.total, listed: digest.listed, chars: digest.text.length, saved: saved.size, version: version() })}\n`);
+  const stats = compactionStats(rollout, calls);
+  appendFileSync(
+    join(root, 'log.jsonl'),
+    `${JSON.stringify({ ts: new Date().toISOString(), session: input.session_id, calls: digest.total, listed: digest.listed, chars: digest.text.length, saved: saved.size, ...stats, version: version() })}\n`,
+  );
   expire(root);
   return JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: redactSecrets(`${digest.text}\n(fast-jev-compaction ${version()})`) } });
 }

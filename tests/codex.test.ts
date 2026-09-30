@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { expire, run } from '../codex/fact-sheet.js';
-import { budgetFor, buildDigest, callEntry, contextWindow, MAX_BUDGET, MIN_BUDGET, parseRollout, type CodexCall } from '../src/codex.js';
+import { budgetFor, buildDigest, callEntry, compactionStats, contextWindow, MAX_BUDGET, MIN_BUDGET, parseRollout, type CodexCall } from '../src/codex.js';
 
 const item = (payload: object) => JSON.stringify({ type: 'response_item', payload });
 const execWrap = (output: string, code = 0) => [
@@ -117,6 +117,18 @@ describe('buildDigest', () => {
   it('always lists the newest call, and a roomy budget keeps short observations whole', () => {
     expect(buildDigest(calls, 10, () => undefined).listed).toBe(1);
     expect(buildDigest(calls, 100_000, () => undefined).text).toContain('gateway pid 67036');
+  });
+});
+
+describe('compactionStats', () => {
+  const tok = (n: number) => JSON.stringify({ type: 'event_msg', payload: { type: 'token_count', info: { last_token_usage: { input_tokens: n } } } });
+  it('reads the context before and after each compaction and counts reads of saved outputs', () => {
+    const jsonl = [tok(600_000), tok(675_696), JSON.stringify({ type: 'compacted', payload: { message: '' } }), tok(0), tok(50_821), tok(90_000), tok(676_000), JSON.stringify({ type: 'compacted', payload: {} })].join('\n');
+    const calls: CodexCall[] = [
+      { id: 'r', tool: 'Bash', command: "Get-Content 'C:/Users/u/.codex/fast-jev/cache/s/call_x.txt'", output: 'x', error: false },
+      { id: 'o', tool: 'Bash', command: 'git status', output: 'x', error: false },
+    ];
+    expect(compactionStats(jsonl, calls)).toEqual({ before: [675_696, 676_000], after: [50_821, null], reads: 1 });
   });
 });
 
