@@ -228,7 +228,7 @@ export function budgetFor(windowTokens?: number): number {
  * each while room is left; then the remaining room turns fact lines back into verbatim outputs. What fits whole goes whole.
  * JEV-CMP-21: fact lines first let 35 older calls starve the three newest, which a raw tail of the same size kept.
  */
-export function buildDigest(calls: readonly CodexCall[], budgetChars: number, savedAt: (id: string) => string | undefined, sheetPath?: string): Digest {
+export function buildDigest(calls: readonly CodexCall[], budgetChars: number, savedAt: (id: string) => string | undefined, sheetPath?: string, verbatimShare = 0.5): Digest {
   const cache = new Map<string, string>();
   const entry = (i: number, tier: Tier) => {
     const key = `${i}:${tier}`;
@@ -246,7 +246,7 @@ export function buildDigest(calls: readonly CodexCall[], budgetChars: number, sa
     used += size;
     return true;
   };
-  for (const i of newestFirst) place(i, 0, budget / 2);
+  for (const i of newestFirst) place(i, 0, budget * verbatimShare);
   for (const tier of [1, 2] as const) {
     for (const i of newestFirst) if (!tiers.has(i) && !place(i, tier, budget)) break;
   }
