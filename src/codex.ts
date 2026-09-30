@@ -1,4 +1,45 @@
+import { deflateRawSync } from 'node:zlib';
 import { factLines, reproducible } from './compact.js';
+
+/** Picks the lines of `text` worth keeping within `budget` chars, in text order. */
+export type LineSelector = (text: string, budget: number) => string[];
+
+/**
+ * Lines ranked by conditional compressed length (MDL): a 200-char chunk scores its deflate size with the preceding
+ * 32 KB of the same output as dictionary, per char. Ids, hashes, verdicts and errors do not compress against what came
+ * before; repeated rows and boilerplate do. Taken by score until the budget, emitted in text order. Rule fixed before
+ * JEV-CMP-23 H-A screening (ha/prereg.md); held-out confirmation JEV-CMP-25: 51.2% vs 40.6% of 404 facts for the regex
+ * fact lines at a 10% budget, +10.6 pts [+4.3, +17.4] clustered by session.
+ */
+export function mdlLines(text: string, budget: number): string[] {
+  const chunks: Array<{ s: string; at: number }> = [];
+  let at = 0;
+  for (const line of text.split('\n')) {
+    for (let k = 0; k < Math.max(1, line.length); k += 200) chunks.push({ s: line.slice(k, k + 200), at: at + k });
+    at += line.length + 1;
+  }
+  const scored = chunks.map((c, i) => {
+    if (c.s.replace(/\s/g, '').length < 4) return { i, c, score: 0 };
+    const dict = Buffer.from(text.slice(Math.max(0, c.at - 32_768), c.at));
+    const z = deflateRawSync(Buffer.from(c.s), dict.length ? { dictionary: dict } : {}).length;
+    return { i, c, score: z / (c.s.length + 16) };
+  });
+  const picked: typeof scored = [];
+  let used = 0;
+  for (const x of [...scored].sort((p, q) => q.score - p.score || p.i - q.i)) {
+    if (x.score === 0 || used + x.c.s.length + 1 > budget) continue;
+    picked.push(x);
+    used += x.c.s.length + 1;
+  }
+  return picked.sort((p, q) => p.i - q.i).map((x) => x.c.s);
+}
+
+/** Regex fact lines within half the budget, then MDL chunks not already inside them (JEV-CMP-25: +11.4 pts, p 2e-5). */
+export function hybridLines(text: string, budget: number): string[] {
+  const regex = factLines(text, Math.floor(budget / 2));
+  const used = regex.reduce((n, l) => n + l.length + 1, 0);
+  return [...regex, ...mdlLines(text, budget - used).filter((c) => !regex.some((l) => l.includes(c)))];
+}
 
 /**
  * Codex adapter. Codex compacts a chat into the user messages plus an opaque (server-encrypted) summary: every tool
@@ -178,7 +219,7 @@ const ERROR_MARK = /\b(?:error|failed|failure|exception|traceback|denied|not fou
 export type Tier = 0 | 1 | 2;
 
 /** One call as digest lines: short output whole, a reproducible read as a re-run line, an observation as its facts. */
-export function callEntry(call: CodexCall, savedAt?: string, tier: Tier = 1): string {
+export function callEntry(call: CodexCall, savedAt?: string, tier: Tier = 1, select: LineSelector = hybridLines): string {
   const head = `- ${call.id} \`${brief(call.command, 160)}\`${call.error ? ' (error)' : ''}`;
   const where = savedAt ? `full output: ${savedAt}` : 'full output: in the session rollout';
   if (call.output.length <= SMALL_OUTPUT || tier === 0) return call.output ? `${head}\n${indent(call.output)}` : `${head} (no output)`;
@@ -187,7 +228,7 @@ export function callEntry(call: CodexCall, savedAt?: string, tier: Tier = 1): st
   if (read) return `${head} — a read (${call.output.length} chars), re-run to see it; ${where}`;
   const error = call.error || ERROR_MARK.test(call.output.slice(-600));
   const budget = Math.min(error ? 2400 : 1200, Math.max(300, Math.floor(call.output.length * 0.1)));
-  const facts = factLines(call.output, budget);
+  const facts = select(call.output, budget);
   const tail = error ? call.output.slice(-300).trim() : '';
   return `${head} — ${call.output.length} chars, ${facts.length} fact line(s) kept; ${where}\n${indent([...facts, ...(tail && !facts.some((f) => tail.includes(f)) ? ['…', tail] : [])].join('\n'))}`;
 }
@@ -256,11 +297,18 @@ export function budgetFor(windowTokens?: number): number {
  * each while room is left; then the remaining room turns fact lines back into verbatim outputs. What fits whole goes whole.
  * JEV-CMP-21: fact lines first let 35 older calls starve the three newest, which a raw tail of the same size kept.
  */
-export function buildDigest(calls: readonly CodexCall[], budgetChars: number, savedAt: (id: string) => string | undefined, sheetPath?: string, verbatimShare = 0.5): Digest {
+export function buildDigest(
+  calls: readonly CodexCall[],
+  budgetChars: number,
+  savedAt: (id: string) => string | undefined,
+  sheetPath?: string,
+  verbatimShare = 0.5,
+  select: LineSelector = hybridLines,
+): Digest {
   const cache = new Map<string, string>();
   const entry = (i: number, tier: Tier) => {
     const key = `${i}:${tier}`;
-    if (!cache.has(key)) cache.set(key, callEntry(calls[i]!, savedAt(calls[i]!.id), tier));
+    if (!cache.has(key)) cache.set(key, callEntry(calls[i]!, savedAt(calls[i]!.id), tier, select));
     return cache.get(key)!;
   };
   const budget = budgetChars - 600; // the header

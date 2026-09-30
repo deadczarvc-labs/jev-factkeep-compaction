@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { expire, run } from '../codex/fact-sheet.js';
-import { budgetFor, buildDigest, callEntry, compactionStats, contextWindow, MAX_BUDGET, MIN_BUDGET, parseRollout, type CodexCall } from '../src/codex.js';
+import { budgetFor, buildDigest, callEntry, compactionStats, contextWindow, hybridLines, MAX_BUDGET, mdlLines, MIN_BUDGET, parseRollout, type CodexCall } from '../src/codex.js';
 
 const item = (payload: object) => JSON.stringify({ type: 'response_item', payload });
 const execWrap = (output: string, code = 0) => [
@@ -117,6 +117,19 @@ describe('buildDigest', () => {
   it('always lists the newest call, and a roomy budget keeps short observations whole', () => {
     expect(buildDigest(calls, 10, () => undefined).listed).toBe(1);
     expect(buildDigest(calls, 100_000, () => undefined).text).toContain('gateway pid 67036');
+  });
+});
+
+describe('line selectors', () => {
+  const table = Array.from({ length: 200 }, (_, i) => `row ${i % 7} ok ok ok status=ready region=eu-west`).join('\n');
+  const text = `${table}\nbuild 7f3a9c2e41d8b05f verified: 3 of 4 checks failed\n${table}`;
+  it('MDL keeps the line that does not compress against the output around it', () => {
+    expect(mdlLines(text, 200).join('\n')).toContain('7f3a9c2e41d8b05f');
+  });
+  it('hybrid keeps regex fact lines and adds MDL lines within the same budget', () => {
+    const lines = hybridLines(text, 400);
+    expect(lines.join('\n')).toContain('3 of 4 checks failed');
+    expect(lines.reduce((n, l) => n + l.length + 1, 0)).toBeLessThanOrEqual(400);
   });
 });
 
