@@ -136,6 +136,9 @@ lost):
 - Round 6 is not fully blind for this row: one of its facts (a failed `ls` inside a compound command) was lost to a
   re-run note, and re-run notes were made to point to the saved output after that was seen.
 
+Blind round 7 (0.3.0-astra.13, 4 new transcripts, 55 preregistered facts): in context or saved 55/55 at every session
+length from 0.8 to 1.5 windows; in context alone 55 / 53 / 48 / 47. No fallback.
+
 ## Hermes Agent
 
 The same rules run in the Hermes Agent context engine
@@ -154,11 +157,11 @@ baseline, the newest raw outputs cut to the same size.
 
 | round | adapter | rollouts / facts | sheet in context | raw tail, same size | sheet or saved | McNemar |
 |---|---|---|---|---|---|---|
-| 6 | fixed 18k chars, fact lines first | 4 / 55 | 14/55 | 13/55 | 55/55 | b = 4, c = 3, p = 1 |
-| 7 | 5% of the window, newest verbatim first | 4 / 59 | 59/59 | 53/59 | 59/59 | b = 6, c = 0, p = 0.031 |
+| 8 | fixed 18k chars, fact lines first | 4 / 55 | 14/55 | 13/55 | 55/55 | b = 4, c = 3, p = 1 |
+| 9 | 5% of the window, newest verbatim first | 4 / 59 | 59/59 | 53/59 | 59/59 | b = 6, c = 0, p = 0.031 |
 
-Round 6 failed its hypothesis: at 18k chars against 0.2–0.9M chars of output, the sheet reached back about 35 calls,
-like the raw tail, and fact lines for older calls took the room the newest outputs needed. Round 7 sized the sheet from
+Round 8 failed its hypothesis: at 18k chars against 0.2–0.9M chars of output, the sheet reached back about 35 calls,
+like the raw tail, and fact lines for older calls took the room the newest outputs needed. Round 9 sized the sheet from
 the model's window (165 680 chars for an 828k-token window) and filled it newest first, verbatim before fact lines.
 All six facts it kept and the tail lost come from one rollout, the one with the most output (563k chars); in the other
 three the budget covered the facts either way. The hook ran in 36–114 ms.
