@@ -189,9 +189,14 @@ export function factLines(text: string, budget: number): string[] {
 // 3) the fact-line budget grows with the result, so a long dump keeps a share of its fact lines, not 360 chars;
 // 4) the note names where the full output still is (the session transcript keeps every original result), because
 //    re-running an observation does not give it back.
-// Offline sweep on JEV-CMP-13 (cmp13/replay.mts): 3000 / 0.2 kept 49/50 at 0.669 reduction (was 41/50 at 0.756).
-export const SMALL_KEEP_CHARS = 3_000;
-export const FACT_SHARE = 0.2;
+// Offline sweep on JEV-CMP-13 ∪ CMP-14 (cmp13/replay.mts, 100 preregistered facts, recorded Jev decisions):
+// 3000 / 0.2 kept 95/100 at 0.682 reduction; 6000 / 0.2 kept 99/100 at 0.626 (per transcript 0.49-0.72).
+// An observation up to ~1.5k tokens is never cut; the one loss left is a dense 14.7k table dump.
+// ponytail: calibration knobs; the env override exists for the offline sweep (cmp13/replay.mts) and is absent in the
+// hook sandbox, where globalThis.process may not exist.
+const knob = (name: string, fallback: number) => Number((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.[name] ?? fallback);
+export const SMALL_KEEP_CHARS = knob('FJC_SMALL_KEEP', 6_000);
+export const FACT_SHARE = knob('FJC_FACT_SHARE', 0.2);
 
 /** A reduced result that keeps its head, its fact lines and its tail; an error keeps more. */
 export function factStubText(text: string, isError: boolean, headChars: number, factBudget: number, id?: string): string {
@@ -221,8 +226,13 @@ const READ_VERBS = new Set([
 ]);
 const GIT_READS = /^git\s+(log|show|diff|status|blame|ls-files|rev-parse|branch|remote|describe)\b/;
 
+// A log, a JSONL ledger or a followed stream changes under you: re-reading it later does not give this output back
+// (JEV-CMP-14 held out: a `tail -c` of a log was shrunk to a re-run line and lost two ids).
+const MUTABLE_SOURCE = /\.(?:log|jsonl|out|err)\b|[\\/]logs?[\\/]|\bjournalctl\b|\b(?:docker|kubectl)\s+logs\b|-Tail\b|-Wait\b|\btail\s+-[a-zA-Z]*[fF]/i;
+
 /** True when re-running the call would give its output back: a read of files, not of the world. */
 export function reproducible(tool: string, input: Record<string, unknown>): boolean {
+  if (MUTABLE_SOURCE.test(JSON.stringify(input ?? {}))) return false;
   if (READ_TOOLS.has(tool)) return true;
   if (!SHELL_TOOLS.has(tool)) return false;
   const command = String(input['command'] ?? '');

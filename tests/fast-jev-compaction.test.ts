@@ -446,7 +446,7 @@ describe('fork: fact stubs', () => {
       'node_modules/partyserver 0.4.1',
       '27b19d7f3962fec8 *agents-index.ts',
     ].join('\n');
-    const text = `${'h'.repeat(300)}\n${'filler\n'.repeat(200)}${middle}\n${'filler\n'.repeat(200)}${'t'.repeat(200)}`;
+    const text = `${'h'.repeat(300)}\n${'filler\n'.repeat(500)}${middle}\n${'filler\n'.repeat(500)}${'t'.repeat(200)}`; // > SMALL_KEEP
     const stub = factStubText(text, false, 300, 600);
     for (const fact of ['179655', 'oauth-authorization-server HTTP 404', 'pid 43748', '127.0.0.1:3845', 'partyserver 0.4.1', '27b19d7f3962fec8']) {
       expect(stub).toContain(fact);
@@ -526,7 +526,7 @@ describe('fork: hard rails (JEV-CMP-13)', () => {
   it('never cuts a short observation, keeps whole lines at the tail, and says where the full output is', () => {
     const short = `${'a'.repeat(1200)}\ntable vec_episodes no such module: vec0\n${'b'.repeat(1200)}`;
     expect(factStubText(short, false, 200, 360)).toBe(short); // under 3000 chars: kept whole
-    const body = Array.from({ length: 400 }, (_, i) => `row ${i} ok`).join('\n');
+    const body = Array.from({ length: 800 }, (_, i) => `row ${i} ok`).join('\n');
     const long = `${body}\n36220 32.02000\nend`;
     const stub = factStubText(long, false, 200, 360, 'toolu_X');
     expect(stub).toContain('36220 32.02000'); // the line at the tail boundary is not split
@@ -538,5 +538,17 @@ describe('fork: hard rails (JEV-CMP-13)', () => {
     const dump = Array.from({ length: 300 }, (_, i) => `pid ${10000 + i} port ${3000 + i} status failed`).join('\n');
     const kept = factStubText(dump, false, 200, 360).split('\n').filter((l) => l.startsWith('pid ')).length;
     expect(kept).toBeGreaterThan(40); // 20% of ~12k chars, not 360 chars (about 8 lines)
+  });
+});
+
+describe('fork: logs are observations (JEV-CMP-14)', () => {
+  it('never treats a read of a log, a JSONL ledger or a followed stream as reproducible', () => {
+    expect(reproducible('Bash', { command: 'tail -c 1500 C:/ops/app/restic.log' })).toBe(false);
+    expect(reproducible('Read', { file_path: 'C:/ops/jev-net/ledger/screen.jsonl' })).toBe(false);
+    expect(reproducible('Bash', { command: 'tail -f /var/log/syslog' })).toBe(false);
+    expect(reproducible('PowerShell', { command: 'Get-Content app.txt -Tail 50' })).toBe(false);
+    expect(reproducible('Bash', { command: 'docker logs web' })).toBe(false);
+    expect(reproducible('Read', { file_path: 'C:/src/app.ts' })).toBe(true); // source files still re-read
+    expect(reproducible('Bash', { command: 'tail -n 20 src/app.ts' })).toBe(true);
   });
 });
