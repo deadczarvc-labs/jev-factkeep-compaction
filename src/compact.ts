@@ -189,24 +189,39 @@ export function factLines(text: string, budget: number): string[] {
 // 3) the fact-line budget grows with the result, so a long dump keeps a share of its fact lines, not 360 chars;
 // 4) the note names where the full output still is (the session transcript keeps every original result), because
 //    re-running an observation does not give it back.
-// Offline sweep on JEV-CMP-13 ∪ CMP-14 (cmp13/replay.mts, 100 preregistered facts, recorded Jev decisions):
-// 3000 / 0.2 kept 95/100 at 0.682 reduction; 6000 / 0.2 kept 99/100 at 0.626 (per transcript 0.49-0.72).
-// An observation up to ~1.5k tokens is never cut; the one loss left is a dense 14.7k table dump.
-// ponytail: calibration knobs; the env override exists for the offline sweep (cmp13/replay.mts) and is absent in the
-// hook sandbox, where globalThis.process may not exist.
+// 5) a dense dump (a table whose lines are almost all facts) has no filler to drop, so up to `denseKeep` it stays;
+// 6) a read's output becomes a re-run line only when long and free of failure/timeout/background markers.
+// The rails come in tiers (RAIL_TIERS): compact() uses the strictest tier whose reduction clears RAIL_FLOOR, so the
+// rails can never push a compaction under the hook's 25% fallback (which would lose every fact to a summary).
+// Offline sweep on JEV-CMP-13 ∪ 14 ∪ 15 (cmp13/replay.mts: 157 preregistered facts, recorded Jev decisions), tier 0:
+// 157/157 kept at 0.558 pooled reduction, per transcript 0.31-0.79.
+export interface Rails {
+  small: number; // an observation up to this many chars is never cut
+  share: number; // fact-line budget as a share of the result
+  readKeep: number; // a read output up to this many chars is kept, not turned into a re-run line
+  denseKeep: number; // a dense dump up to this many chars is kept
+  denseShare: number; // "dense": fact lines are at least this share of the chars
+}
+// ponytail: calibration knobs; the env override exists for the offline sweep and is absent in the hook sandbox,
+// where globalThis.process may not exist. It moves tier 0 only.
 const knob = (name: string, fallback: number) => Number((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.[name] ?? fallback);
-export const SMALL_KEEP_CHARS = knob('FJC_SMALL_KEEP', 6_000);
-export const FACT_SHARE = knob('FJC_FACT_SHARE', 0.2);
+export const RAIL_TIERS: readonly Rails[] = [
+  { small: knob('FJC_SMALL_KEEP', 6_000), share: knob('FJC_FACT_SHARE', 0.3), readKeep: knob('FJC_READ_KEEP', 1_000), denseKeep: knob('FJC_DENSE_KEEP', 20_000), denseShare: knob('FJC_DENSE_SHARE', 0.5) },
+  { small: 3_000, share: 0.2, readKeep: 1_000, denseKeep: 0, denseShare: 1 },
+  { small: 0, share: 0.1, readKeep: 0, denseKeep: 0, denseShare: 1 },
+];
+export const RAIL_FLOOR = 0.3; // clears the hook's 25% minimum with a margin
 
 /** A reduced result that keeps its head, its fact lines and its tail; an error keeps more. */
-export function factStubText(text: string, isError: boolean, headChars: number, factBudget: number, id?: string): string {
+export function factStubText(text: string, isError: boolean, headChars: number, factBudget: number, id?: string, rails: Rails = RAIL_TIERS[0]!): string {
   const headKeep = isError ? Math.max(headChars, ERROR_KEEP_CHARS) : headChars;
-  if (text.length <= Math.max(SMALL_KEEP_CHARS, headKeep + TAIL_CHARS + 120)) return text;
+  if (text.length <= Math.max(rails.small, headKeep + TAIL_CHARS + 120)) return text;
   const headNl = text.lastIndexOf('\n', headKeep);
   const headEnd = headNl > headKeep / 2 ? headNl : headKeep;
   const tailNl = text.indexOf('\n', text.length - TAIL_CHARS);
   const tailStart = tailNl === -1 || tailNl >= text.length - 1 ? text.length - TAIL_CHARS : tailNl + 1;
-  const facts = factLines(text.slice(headEnd, tailStart), Math.max(factBudget, Math.floor(text.length * FACT_SHARE)));
+  if (text.length <= rails.denseKeep && factLines(text, Number.MAX_SAFE_INTEGER).reduce((n, l) => n + l.length + 1, 0) >= text.length * rails.denseShare) return text;
+  const facts = factLines(text.slice(headEnd, tailStart), Math.max(factBudget, Math.floor(text.length * rails.share)));
   const where = id ? `the full output stays in this session's transcript under ${id}` : 'the full output stays in the session transcript';
   return `${text.slice(0, headEnd)}\n[fast-jev-compaction omitted ${tailStart - headEnd} chars of this tool result${isError ? ' (error)' : ''}${
     facts.length ? `; kept its ${facts.length} fact line(s)` : ''
@@ -229,6 +244,9 @@ const GIT_READS = /^git\s+(log|show|diff|status|blame|ls-files|rev-parse|branch|
 // A log, a JSONL ledger or a followed stream changes under you: re-reading it later does not give this output back
 // (JEV-CMP-14 held out: a `tail -c` of a log was shrunk to a re-run line and lost two ids).
 const MUTABLE_SOURCE = /\.(?:log|jsonl|out|err)\b|[\\/]logs?[\\/]|\bjournalctl\b|\b(?:docker|kubectl)\s+logs\b|-Tail\b|-Wait\b|\btail\s+-[a-zA-Z]*[fF]/i;
+
+// Markers in a read's output that make it an observation of the world (a failure, a timeout, a background job).
+const READ_OBSERVATION = /\b(?:errno|os error|timed? ?out|timeout|permission denied|access is denied|no such file|cannot find|not found|running in background|background with id|exit code [1-9]|killed)\b/i;
 
 /** True when re-running the call would give its output back: a read of files, not of the world. */
 export function reproducible(tool: string, input: Record<string, unknown>): boolean {
@@ -273,6 +291,7 @@ export function applyDecisions(
   calls: readonly ToolCall[],
   headChars: number,
   keepFacts = true,
+  rails: Rails = RAIL_TIERS[0]!,
 ): Message[] {
   const byId = new Map(calls.map((call) => [call.id, call]));
   const actions = new Map<string, CallDecision['action']>();
@@ -281,7 +300,7 @@ export function applyDecisions(
     if (call && decision.action !== 'keep') actions.set(call.tool_use_id, decision.action);
   }
   // Fork: a call Jev no longer needs is reduced to a fact stub (brief input, fact lines), never erased.
-  if (keepFacts) return applyFactStubs(messages, actions, headChars);
+  if (keepFacts) return applyFactStubs(messages, actions, headChars, rails);
   const kept: Message[] = [];
   for (const message of messages) {
     const touched =
@@ -356,13 +375,19 @@ function applyFactStubs(
   messages: readonly Message[],
   actions: ReadonlyMap<string, CallDecision['action']>,
   headChars: number,
+  rails: Rails,
 ): Message[] {
   const rerunnable = new Set<string>();
   for (const message of messages) {
     for (const tool of message.toolUses) if (reproducible(tool.tool, tool.input)) rerunnable.add(tool.tool_use_id);
   }
+  // A read's output is replaced by a re-run line only when it is long and reads like a plain read: a short output is
+  // cheap and kept like any observation, and a read that timed out, failed or went to the background is an
+  // observation (JEV-CMP-15 held out: 4 facts lost to re-run lines on 604-909 char outputs).
   const reduce = (id: string, text: string, isError: boolean) =>
-    rerunnable.has(id) && !isError ? rerunNote(text) : factStubText(text, isError, headChars, FACT_BUDGET_CHARS, id);
+    rerunnable.has(id) && !isError && text.length > rails.readKeep && !READ_OBSERVATION.test(text)
+      ? rerunNote(text)
+      : factStubText(text, isError, headChars, FACT_BUDGET_CHARS, id, rails);
   return messages.map((message) => {
     let changed = false;
     const toolUses = message.toolUses.map((tool) => {
@@ -404,6 +429,26 @@ export function messageChars(message: Message): number {
   }
   for (const result of message.toolResults ?? []) total += result.text.length;
   return total;
+}
+
+/**
+ * The decisions applied under the strictest rail tier whose char reduction clears RAIL_FLOOR; the last tier is used
+ * when none does. Keeps facts first and gives up rails only as far as the reduction needs.
+ */
+export function applyWithRails(
+  messages: readonly Message[],
+  decisions: readonly CallDecision[],
+  calls: readonly ToolCall[],
+  headChars: number,
+): { messages: Message[]; tier: number } {
+  const before = messages.reduce((sum, message) => sum + messageChars(message), 0);
+  let out: Message[] = [];
+  for (const [tier, rails] of RAIL_TIERS.entries()) {
+    out = applyDecisions(messages, decisions, calls, headChars, true, rails);
+    const after = out.reduce((sum, message) => sum + messageChars(message), 0);
+    if (before === 0 || (before - after) / before >= RAIL_FLOOR || tier === RAIL_TIERS.length - 1) return { messages: out, tier };
+  }
+  return { messages: out, tier: RAIL_TIERS.length - 1 };
 }
 
 export function reductionRatio(result: Pick<CompactResult, 'stats'>): number {
@@ -449,12 +494,7 @@ export async function compact(
   const decisions = calls.map((call) =>
     decideCall(call, answers.get(call.id) ?? { keepCall: 1, keepResult: 1 }, resolved),
   );
-  const kept = applyDecisions(
-    messages,
-    decisions,
-    calls,
-    resolved.truncateHeadChars,
-  );
+  const { messages: kept, tier: railTier } = applyWithRails(messages, decisions, calls, resolved.truncateHeadChars);
   return {
     messages: kept,
     decisions,
@@ -472,6 +512,7 @@ export async function compact(
       stateStage: fitted.stage,
       requests: batches.length,
       ms: Date.now() - started,
+      railTier,
     },
   };
 }

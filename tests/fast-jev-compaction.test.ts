@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   applyDecisions,
+  applyWithRails,
+  RAIL_TIERS,
   batchCalls,
   briefInput,
   reproducible,
@@ -550,5 +552,35 @@ describe('fork: logs are observations (JEV-CMP-14)', () => {
     expect(reproducible('Bash', { command: 'docker logs web' })).toBe(false);
     expect(reproducible('Read', { file_path: 'C:/src/app.ts' })).toBe(true); // source files still re-read
     expect(reproducible('Bash', { command: 'tail -n 20 src/app.ts' })).toBe(true);
+  });
+});
+
+describe('fork: rail tiers and the last rails (JEV-CMP-15)', () => {
+  const obs = (id: string, text: string, command = 'curl -s https://x.org') => [
+    { role: 'assistant' as const, text: '', toolUses: [{ tool_use_id: id, tool: 'Bash', input: { command } }] },
+    { role: 'user' as const, text: '', toolUses: [], toolResults: [{ tool_use_id: id, text }] },
+  ];
+  const run = (messages: any[]) => {
+    const calls = collectToolCalls(messages, 0);
+    const decisions = calls.map((c: any) => ({ id: c.id, tool: c.tool, action: 'drop_call' as const, reason: 'call_dropped' as const, keepCall: 0.1, keepResult: 0.1 }));
+    return applyWithRails(messages, decisions, calls, 200);
+  };
+
+  it('gives up rails tier by tier instead of falling under the reduction floor', () => {
+    const five = Array.from({ length: 120 }, (_, i) => `line ${i} plain words here`).join('\n'); // ~3.4k, under tier 0 small
+    const out = run([{ role: 'user', text: 'go', toolUses: [] }, ...obs('toolu_A', five), ...obs('toolu_B', five)]);
+    expect(out.tier).toBeGreaterThan(0); // tier 0 keeps both whole: no reduction
+  });
+
+  it('keeps a dense table whole at tier 0 and turns a failed short read into an observation', () => {
+    const table = Array.from({ length: 300 }, (_, i) => `F:/Projects/p${i} ${3000 + i} ${19602045188 + i}`).join('\n'); // ~12k, all facts
+    const big = 'x'.repeat(40_000); // plenty of reducible filler elsewhere
+    const out = run([{ role: 'user', text: 'go', toolUses: [] }, ...obs('toolu_T', table), ...obs('toolu_X', big),
+      ...obs('toolu_F', "find: '/c/nope': No such file or directory\nCommand did not complete within its 120s timeout", 'find /c/nope -name x')]);
+    expect(out.tier).toBe(0);
+    const text = (id: string) => out.messages.flatMap((m: any) => m.toolResults ?? []).find((r: any) => r.tool_use_id === id)?.text ?? '';
+    expect(text('toolu_T')).toContain('F:/Projects/p150 3150'); // dense dump kept whole
+    expect(text('toolu_F')).toContain('120s timeout'); // not a re-run line
+    expect(RAIL_TIERS[0]!.denseKeep).toBeGreaterThan(0);
   });
 });
