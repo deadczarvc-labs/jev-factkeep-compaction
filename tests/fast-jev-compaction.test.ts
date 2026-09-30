@@ -3,6 +3,7 @@ import {
   applyDecisions,
   batchCalls,
   briefInput,
+  reproducible,
   factStubText,
   buildJevRequest,
   collectToolCalls,
@@ -461,13 +462,55 @@ describe('fork: fact stubs', () => {
     const error = `Traceback\n${'e'.repeat(1_900)}`;
     expect(factStubText(error, true, 300, 600)).toBe(error);
     const messages = transcript();
-    messages[5]!.toolResults![0]!.text = `${'x'.repeat(2_000)}\nFAIL b.test.ts expected 2 to be 3\n${'x'.repeat(2_000)}`;
+    messages[7]!.toolResults![0]!.text = `${'x'.repeat(2_000)}\nFAIL b.test.ts expected 2 to be 3\n${'x'.repeat(2_000)}`;
     const calls = collectToolCalls(messages, 0);
     const decisions = calls.map((call) => decideCall(call, { keepCall: 0.1, keepResult: 0.1 }, { keepThreshold: 0.5 }));
     const kept = applyDecisions(messages, decisions, calls, 300);
     expect(kept).toHaveLength(messages.length);
-    expect(kept[5]?.toolResults?.[0]?.text).toContain('FAIL b.test.ts expected 2 to be 3');
+    expect(kept[7]?.toolResults?.[0]?.text).toContain('FAIL b.test.ts expected 2 to be 3');
     expect(kept[0]).toBe(messages[0]);
     expect(briefInput({ command: 'a'.repeat(500), n: 1 }, 300)).toEqual({ command: `${'a'.repeat(300)}…[200 chars]`, n: 1 });
+  });
+});
+
+describe('fork: the upstream goal, drop what a re-run gives back', () => {
+  it('tells reproducible reads of files from observations of the world and side effects', () => {
+    const yes = [
+      ['Read', { file_path: 'src/a.ts' }],
+      ['Grep', { pattern: 'x' }],
+      ['Bash', { command: 'ls -la F:/Temp/ucp 2>&1 | head -40; echo ---; find F:/Temp/ucp -maxdepth 3 -type d' }],
+      ['Bash', { command: 'cd F:/Temp/ucp && sha256sum *.ts | cut -c1-16' }],
+      ['Bash', { command: 'git log --oneline | head -5' }],
+      ['PowerShell', { command: "rg -l -i 'x' 'C:/st' 2>&1 | Select-Object -First 20" }],
+    ] as const;
+    const no = [
+      ['Bash', { command: 'curl -s https://mcp.unframer.co/mcp' }],
+      ['Bash', { command: 'timeout 60 mcpc --json 2>&1 | head -c 12000' }],
+      ['Bash', { command: 'netstat -ano | grep 3845; tasklist' }],
+      ['Bash', { command: 'ls > listing.txt' }],
+      ['Bash', { command: "sed -i 's/a/b/' f.txt" }],
+      ['Bash', { command: 'npm test' }],
+      ['Write', { file_path: 'a.ts', content: 'x' }],
+      ['mcp__srv__fetch', { url: 'https://x.org' }],
+    ] as const;
+    for (const [tool, input] of yes) expect(reproducible(tool, input as Record<string, unknown>), `${tool} ${JSON.stringify(input)}`).toBe(true);
+    for (const [tool, input] of no) expect(reproducible(tool, input as Record<string, unknown>), `${tool} ${JSON.stringify(input)}`).toBe(false);
+  });
+
+  it('shrinks a dropped reproducible read to one line but keeps an observation as a fact stub', () => {
+    const big = `${'x'.repeat(1_000)}\nGET https://a.example/.well-known/oauth HTTP 404\n${'x'.repeat(1_000)}`;
+    const messages: Message[] = [
+      { role: 'user', text: 'audit', toolUses: [] },
+      { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'r1', tool: 'Read', input: { file_path: 'src/a.ts' } }] },
+      { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'r1', text: big }] },
+      { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'c1', tool: 'Bash', input: { command: 'curl -s https://a.example/.well-known/oauth' } }] },
+      { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'c1', text: big }] },
+    ];
+    const calls = collectToolCalls(messages, 0);
+    const decisions = calls.map((call) => decideCall(call, { keepCall: 0.1, keepResult: 0.1 }, { keepThreshold: 0.5 }));
+    const kept = applyDecisions(messages, decisions, calls, 200);
+    expect(kept[2]?.toolResults?.[0]?.text).toMatch(/^\[fast-jev-compaction omitted \d+ chars: a reproducible read/);
+    expect(kept[1]?.toolUses[0]?.input).toEqual({ file_path: 'src/a.ts' });
+    expect(kept[4]?.toolResults?.[0]?.text).toContain('HTTP 404');
   });
 });

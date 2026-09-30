@@ -194,6 +194,39 @@ export function factStubText(text: string, isError: boolean, headChars: number, 
   }; re-run the tool if needed]\n${facts.length ? `${facts.join('\n')}\n…\n` : ''}${tail}`;
 }
 
+// The upstream goal (README "What and why", step 4): drop what re-running the tool would give back. So a
+// reproducible read of files (Read, Grep, Glob, ls, cat, rg, sha256sum, git log...) shrinks to one line, while
+// observations of transient state (network, processes, logs), errors and side effects keep their fact stub.
+const READ_TOOLS = new Set(['Read', 'Grep', 'Glob', 'LS', 'NotebookRead', 'ToolSearch']);
+const SHELL_TOOLS = new Set(['Bash', 'PowerShell']);
+const READ_VERBS = new Set([
+  'cd', 'echo', 'printf', 'true', 'ls', 'dir', 'cat', 'type', 'head', 'tail', 'wc', 'find', 'fd', 'rg', 'grep',
+  'egrep', 'sha256sum', 'sha1sum', 'md5sum', 'stat', 'file', 'tree', 'cut', 'tr', 'sort', 'uniq', 'sed', 'awk',
+  'jq', 'basename', 'dirname', 'realpath', 'es', 'es.exe', 'get-content', 'get-childitem', 'select-string',
+  'select-object', 'measure-object', 'get-filehash', 'test-path', 'resolve-path', 'format-table', 'out-string',
+]);
+const GIT_READS = /^git\s+(log|show|diff|status|blame|ls-files|rev-parse|branch|remote|describe)\b/;
+
+/** True when re-running the call would give its output back: a read of files, not of the world. */
+export function reproducible(tool: string, input: Record<string, unknown>): boolean {
+  if (READ_TOOLS.has(tool)) return true;
+  if (!SHELL_TOOLS.has(tool)) return false;
+  const command = String(input['command'] ?? '');
+  if (!command || /(^|[^>2&])>{1,2}(?!&)|\btee\b|\|\s*(sh|bash|pwsh|iex)\b/.test(command.replace(/2>&1|2>\/dev\/null|2>\$null|>\s*\/dev\/null|>\s*\$null/g, ''))) return false;
+  return command.split(/\r?\n|;|&&|\|\||\|/).every((segment) => {
+    const words = segment.trim().replace(/^(?:\w+=\S*\s+)+/, '').replace(/^timeout\s+\S+\s+/, '').replace(/^command\s+/, '');
+    if (!words) return true;
+    if (GIT_READS.test(words)) return true;
+    if (/^sed\s+(-\w*i|--in-place)/.test(words)) return false; // edits in place
+    return READ_VERBS.has(words.split(/\s+/)[0]!.replace(/^["']|["']$/g, '').toLowerCase());
+  });
+}
+
+/** One line for a reproducible read: the call (brief) stays, its output is a note. */
+function rerunNote(text: string): string {
+  return text.length <= 160 ? text : `[fast-jev-compaction omitted ${text.length} chars: a reproducible read, re-run the tool to see it]`;
+}
+
 /** String fields of a stubbed call's input cut to `max` chars: the call stays readable, not verbatim. */
 export function briefInput(input: unknown, max: number): unknown {
   if (typeof input === 'string') return input.length > max ? `${input.slice(0, max)}…[${input.length - max} chars]` : input;
@@ -293,19 +326,27 @@ export function applyDecisions(
 
 const FACT_BUDGET_CHARS = 360;
 const INPUT_BRIEF_CHARS = 200;
+const RERUN_INPUT_CHARS = 160; // enough for the path or command that re-runs it
 
 function applyFactStubs(
   messages: readonly Message[],
   actions: ReadonlyMap<string, CallDecision['action']>,
   headChars: number,
 ): Message[] {
+  const rerunnable = new Set<string>();
+  for (const message of messages) {
+    for (const tool of message.toolUses) if (reproducible(tool.tool, tool.input)) rerunnable.add(tool.tool_use_id);
+  }
+  const reduce = (id: string, text: string, isError: boolean) =>
+    rerunnable.has(id) && !isError ? rerunNote(text) : factStubText(text, isError, headChars, FACT_BUDGET_CHARS);
   return messages.map((message) => {
     let changed = false;
     const toolUses = message.toolUses.map((tool) => {
       const action = actions.get(tool.tool_use_id);
       if (!action || action === 'keep') return tool;
-      const input = action === "drop_call" ? (briefInput(tool.input, INPUT_BRIEF_CHARS) as Record<string, unknown>) : tool.input;
-      const text = tool.text === undefined ? undefined : factStubText(tool.text, tool.isError ?? false, headChars, FACT_BUDGET_CHARS);
+      const brief = rerunnable.has(tool.tool_use_id) ? RERUN_INPUT_CHARS : INPUT_BRIEF_CHARS;
+      const input = action === 'drop_call' || rerunnable.has(tool.tool_use_id) ? (briefInput(tool.input, brief) as Record<string, unknown>) : tool.input;
+      const text = tool.text === undefined ? undefined : reduce(tool.tool_use_id, tool.text, tool.isError ?? false);
       if (text === tool.text && JSON.stringify(input) === JSON.stringify(tool.input)) return tool;
       changed = true;
       const copy: ToolUse = { tool_use_id: tool.tool_use_id, tool: tool.tool, input };
@@ -315,7 +356,7 @@ function applyFactStubs(
     });
     const toolResults = (message.toolResults ?? []).map((result) => {
       if (!actions.has(result.tool_use_id)) return result;
-      const text = factStubText(result.text, result.isError ?? false, headChars, FACT_BUDGET_CHARS);
+      const text = reduce(result.tool_use_id, result.text, result.isError ?? false);
       if (text === result.text) return result;
       changed = true;
       return { tool_use_id: result.tool_use_id, text, isError: result.isError };
