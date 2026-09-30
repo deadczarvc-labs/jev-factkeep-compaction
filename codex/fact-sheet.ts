@@ -12,7 +12,7 @@ import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSyn
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { budgetFor, buildDigest, compactionStats, contextWindow, parseRollout, SMALL_OUTPUT } from '../src/codex.js';
+import { budgetFor, buildDigest, compactionStats, contextWindow, parseRollout, reusedTokens, reuseLines, SMALL_OUTPUT } from '../src/codex.js';
 import { redactSecrets } from '../src/secrets.js';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -68,7 +68,8 @@ export function run(input: HookInput, env: NodeJS.ProcessEnv = process.env): str
     }
   }
   const sheet = save ? join(dir, 'facts.md') : undefined;
-  const digest = buildDigest(calls, Number(env['FJC_CODEX_BUDGET']) || budgetFor(contextWindow(rollout)), (id) => saved.get(id), sheet);
+  const budget = Number(env['FJC_CODEX_BUDGET']) || budgetFor(contextWindow(rollout));
+  const digest = buildDigest(calls, budget, (id) => saved.get(id), sheet, 0.5, reuseLines(reusedTokens(calls)));
   if (sheet) writeFileSync(sheet, redactSecrets(digest.full), 'utf8');
   mkdirSync(root, { recursive: true });
   const stats = compactionStats(rollout, calls);

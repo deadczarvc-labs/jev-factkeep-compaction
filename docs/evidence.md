@@ -210,3 +210,21 @@ new digit tokens; 85 transcripts, 35 sessions). On that label, with compaction a
 The rule written before this check kept the hybrid only if no cell fell more than 1 pt below regex; the 50k cell did, so
 the sheet is back on regex fact lines. Compressibility ranks repetitive lines low (grep hits sharing a path, listings),
 and those are often exactly what the agent opens next. Rounds 10–12 stand as measured, for the facts they measured.
+
+### Past use first
+
+On the same label, whole lines holding every token the agent uses after a compaction take a median 4.0k chars (p90
+11.5k, max 18.6k; 167 compaction cases) — far below the sheet budgets, yet the regex sheet keeps about 73% of those
+tokens at 50k and 96% at 165k. The gap is selection. The only honest signal of future use at compaction time is past use
+(temporal locality, as in cache replacement), so lines holding a token the agent already typed into a later command now
+go first, and the regex fact lines fill the rest of each call's budget:
+
+| compaction at | budget | regex | past use first | difference | 95% CI (by session) |
+|---|---|---|---|---|---|
+| 50% | 50k | 72.5% | 76.3% | +3.7 pts | [+2.4, +6.8] |
+| 50% | 165k | 96.1% | 97.0% | +0.9 | [+0.4, +2.3] |
+| 75% | 50k | 75.4% | 78.1% | +2.7 | [+1.6, +5.5] |
+| 75% | 165k | 96.3% | 97.1% | +0.8 | [+0.2, +2.0] |
+
+The rule (every lower bound above −0.5 pt, +2 pts at 50k) was written before the run. The data are the ones the bound was
+measured on, but the rule has no fitted parameter; a held-out check waits for new Codex sessions.

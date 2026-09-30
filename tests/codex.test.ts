@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { expire, run } from '../codex/fact-sheet.js';
-import { budgetFor, buildDigest, callEntry, compactionStats, contextWindow, hybridLines, MAX_BUDGET, mdlLines, MIN_BUDGET, parseRollout, type CodexCall } from '../src/codex.js';
+import { budgetFor, buildDigest, callEntry, compactionStats, contextWindow, hybridLines, MAX_BUDGET, mdlLines, MIN_BUDGET, parseRollout, reusedTokens, reuseLines, type CodexCall } from '../src/codex.js';
+import { factLines } from '../src/compact.js';
 
 const item = (payload: object) => JSON.stringify({ type: 'response_item', payload });
 const execWrap = (output: string, code = 0) => [
@@ -130,6 +131,23 @@ describe('line selectors', () => {
     const lines = hybridLines(text, 400);
     expect(lines.join('\n')).toContain('3 of 4 checks failed');
     expect(lines.reduce((n, l) => n + l.length + 1, 0)).toBeLessThanOrEqual(400);
+  });
+});
+
+describe('reuse-aware lines', () => {
+  const call = (id: string, command: string, output: string): CodexCall => ({ id, tool: 'Bash', command, output, error: false });
+  const list = Array.from({ length: 50 }, (_, i) => `run job-${4100 + i} queued on worker`).join('\n');
+  const calls = [call('a', 'jobs list', list), call('b', 'jobs logs job-4120', 'body')];
+
+  it('finds tokens an output introduced and a later input used', () => {
+    expect(reusedTokens(calls)).toContain('job-4120');
+  });
+  it('keeps the line the agent acted on even when regex would not', () => {
+    expect(factLines(list, 60).join('\n')).not.toContain('job-4120');
+    expect(reuseLines(reusedTokens(calls))(list, 60).join('\n')).toContain('job-4120');
+  });
+  it('is plain regex when nothing was reused', () => {
+    expect(reuseLines(new Set())(list, 300)).toEqual(factLines(list, 300));
   });
 });
 
