@@ -521,3 +521,22 @@ describe('fork: receipts survive (parity with Hermes jev-context-engine)', () =>
     expect(factStubText(text, false, 200, 360)).toContain('message_id: 8f3e2a-ticket sent');
   });
 });
+
+describe('fork: hard rails (JEV-CMP-13)', () => {
+  it('never cuts a short observation, keeps whole lines at the tail, and says where the full output is', () => {
+    const short = `${'a'.repeat(1200)}\ntable vec_episodes no such module: vec0\n${'b'.repeat(1200)}`;
+    expect(factStubText(short, false, 200, 360)).toBe(short); // under 3000 chars: kept whole
+    const body = Array.from({ length: 400 }, (_, i) => `row ${i} ok`).join('\n');
+    const long = `${body}\n36220 32.02000\nend`;
+    const stub = factStubText(long, false, 200, 360, 'toolu_X');
+    expect(stub).toContain('36220 32.02000'); // the line at the tail boundary is not split
+    expect(stub).toContain('the full output stays in this session\'s transcript under toolu_X');
+    expect(stub).not.toContain('re-run the tool');
+  });
+
+  it('gives long dumps a fact budget proportional to their size', () => {
+    const dump = Array.from({ length: 300 }, (_, i) => `pid ${10000 + i} port ${3000 + i} status failed`).join('\n');
+    const kept = factStubText(dump, false, 200, 360).split('\n').filter((l) => l.startsWith('pid ')).length;
+    expect(kept).toBeGreaterThan(40); // 20% of ~12k chars, not 360 chars (about 8 lines)
+  });
+});

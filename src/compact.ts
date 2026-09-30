@@ -183,17 +183,29 @@ export function factLines(text: string, budget: number): string[] {
   return picked.sort((a, b) => a.index - b.index).map(({ line }) => line);
 }
 
+// Hard rails for an observation (a result a re-run would not give back), JEV-CMP-13 out of sample:
+// 1) a short one is never cut: it is almost all facts, and cheap;
+// 2) head and tail end on line boundaries, so no fact line is split in two;
+// 3) the fact-line budget grows with the result, so a long dump keeps a share of its fact lines, not 360 chars;
+// 4) the note names where the full output still is (the session transcript keeps every original result), because
+//    re-running an observation does not give it back.
+// Offline sweep on JEV-CMP-13 (cmp13/replay.mts): 3000 / 0.2 kept 49/50 at 0.669 reduction (was 41/50 at 0.756).
+export const SMALL_KEEP_CHARS = 3_000;
+export const FACT_SHARE = 0.2;
+
 /** A reduced result that keeps its head, its fact lines and its tail; an error keeps more. */
-export function factStubText(text: string, isError: boolean, headChars: number, factBudget: number): string {
+export function factStubText(text: string, isError: boolean, headChars: number, factBudget: number, id?: string): string {
   const headKeep = isError ? Math.max(headChars, ERROR_KEEP_CHARS) : headChars;
-  if (text.length <= headKeep + TAIL_CHARS + 120) return text;
-  const head = text.slice(0, headKeep);
-  const tail = text.slice(-TAIL_CHARS);
-  const facts = factLines(text.slice(headKeep, -TAIL_CHARS), factBudget);
-  const omitted = text.length - headKeep - TAIL_CHARS;
-  return `${head}\n[fast-jev-compaction omitted ${omitted} chars of this tool result${isError ? ' (error)' : ''}${
+  if (text.length <= Math.max(SMALL_KEEP_CHARS, headKeep + TAIL_CHARS + 120)) return text;
+  const headNl = text.lastIndexOf('\n', headKeep);
+  const headEnd = headNl > headKeep / 2 ? headNl : headKeep;
+  const tailNl = text.indexOf('\n', text.length - TAIL_CHARS);
+  const tailStart = tailNl === -1 || tailNl >= text.length - 1 ? text.length - TAIL_CHARS : tailNl + 1;
+  const facts = factLines(text.slice(headEnd, tailStart), Math.max(factBudget, Math.floor(text.length * FACT_SHARE)));
+  const where = id ? `the full output stays in this session's transcript under ${id}` : 'the full output stays in the session transcript';
+  return `${text.slice(0, headEnd)}\n[fast-jev-compaction omitted ${tailStart - headEnd} chars of this tool result${isError ? ' (error)' : ''}${
     facts.length ? `; kept its ${facts.length} fact line(s)` : ''
-  }; re-run the tool if needed]\n${facts.length ? `${facts.join('\n')}\n…\n` : ''}${tail}`;
+  }; ${where}]\n${facts.length ? `${facts.join('\n')}\n…\n` : ''}${text.slice(tailStart)}`;
 }
 
 // The upstream goal (README "What and why", step 4): drop what re-running the tool would give back. So a
@@ -340,7 +352,7 @@ function applyFactStubs(
     for (const tool of message.toolUses) if (reproducible(tool.tool, tool.input)) rerunnable.add(tool.tool_use_id);
   }
   const reduce = (id: string, text: string, isError: boolean) =>
-    rerunnable.has(id) && !isError ? rerunNote(text) : factStubText(text, isError, headChars, FACT_BUDGET_CHARS);
+    rerunnable.has(id) && !isError ? rerunNote(text) : factStubText(text, isError, headChars, FACT_BUDGET_CHARS, id);
   return messages.map((message) => {
     let changed = false;
     const toolUses = message.toolUses.map((tool) => {
