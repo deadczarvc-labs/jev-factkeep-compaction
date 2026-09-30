@@ -8,7 +8,8 @@ import type {
   TurnCompleteInput,
 } from 'claude-code';
 
-import { compact, reductionRatio, resolveOptions } from '../src/compact.js';
+import { compact, RAIL_FLOOR, reductionRatio, resolveOptions } from '../src/compact.js';
+import { estimateTokens } from '../src/state.js';
 import { buildJevRequest, DEFAULT_MODEL, parseJevResponse } from '../src/request.js';
 import type {
   CallAnswer,
@@ -174,13 +175,60 @@ export function forgetAnswers(): void {
 }
 
 /** Runs the library over a session transcript; throws when the key is missing or Jev fails. */
+/** The context window's fill, as `$.session.usage().context` has it. */
+export type WindowUsage = { tokens?: number; window?: number };
+
+export type Pressure = {
+  /** The char reduction the rails must reach. */
+  minReduction: number;
+  /** The reduction below which the hook falls back to the built-in summary. */
+  gate: number;
+};
+
+/**
+ * How much a compaction must free: enough to bring the context back to `compactAtPercent − 10` of the window, and
+ * accepted when it lands at or below `compactAtPercent − 5`. A fixed minimum (the old 30% rails floor, 25% gate) made
+ * repeated compactions of one session cut more than the window needed and fall back to the summary once kept facts
+ * filled it; in a simulated session one window long this keeps 97.0% of 336 preregistered facts against 92.6%. The
+ * part of the context outside the transcript (system prompt, tools) does not shrink: it is the window's token count
+ * minus the transcript's own estimate. Without usage figures the fixed defaults apply.
+ */
+export function pressure(usage: WindowUsage | undefined, transcriptTokens: number, config: HookConfig): Pressure {
+  if (!usage?.tokens || !usage.window || transcriptTokens <= 0) {
+    return { minReduction: RAIL_FLOOR, gate: config.minReductionRatio };
+  }
+  const overhead = Math.max(0, usage.tokens - transcriptTokens);
+  const need = (percent: number) => 1 - ((percent / 100) * usage.window! - overhead) / transcriptTokens;
+  const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x));
+  return {
+    minReduction: clamp(need(config.compactAtPercent - 10), 0.05, 0.9),
+    gate: clamp(need(config.compactAtPercent - 5), 0, 0.9),
+  };
+}
+
+/** Estimated tokens of a transcript's texts, tool inputs and tool results. */
+export function transcriptTokens(messages: readonly SessionMessage[]): number {
+  let total = 0;
+  for (const message of messages as readonly Message[]) {
+    total += estimateTokens(message.text ?? '');
+    for (const use of message.toolUses ?? []) total += estimateTokens(JSON.stringify(use.input ?? {}));
+    for (const result of message.toolResults ?? []) total += estimateTokens(result.text ?? '');
+  }
+  return total;
+}
+
 export async function compactSession(
   messages: readonly SessionMessage[],
   config: HookConfig,
   fetchFn: HookFetch,
+  minReduction?: number,
 ): Promise<SessionCompaction> {
   if (!config.apiKey) throw new Error('TYPESAFE_API_KEY is not configured');
-  const result = await compact(messages, jevAsker(fetchFn, config.apiKey, config.model), { ...config, knownAnswers });
+  const result = await compact(messages, jevAsker(fetchFn, config.apiKey, config.model), {
+    ...config,
+    knownAnswers,
+    ...(minReduction === undefined ? {} : { minReduction }),
+  });
   for (const id of knownAnswers.keys()) {
     if (knownAnswers.size <= KNOWN_CAP) break;
     knownAnswers.delete(id);
@@ -279,15 +327,25 @@ export const register: Register = (on: On, options: PluginOptions) => {
   on('session.compact', async ($, event, next) => {
     try {
       const config = { ...configured, apiKey: await getApiKey($, configured) };
-      const { result, messages } = await compactSession(event.messages, config, async (url, init) => {
-        const response = await $.http.fetch(url, init);
-        return { status: response.status, ok: response.ok, text: response.text };
-      });
+      const usage = await $.session.usage().then(
+        (u) => u.context,
+        () => undefined,
+      );
+      const needed = pressure(usage, transcriptTokens(event.messages), config);
+      const { result, messages } = await compactSession(
+        event.messages,
+        config,
+        async (url, init) => {
+          const response = await $.http.fetch(url, init);
+          return { status: response.status, ok: response.ok, text: response.text };
+        },
+        needed.minReduction,
+      );
       for (const line of decisionLogLines(result)) $.ui.log(line);
-      if (reductionRatio(result) < config.minReductionRatio) {
+      if (reductionRatio(result) < needed.gate) {
         notify(
           $,
-          `fallback to built-in summary (below ${percent(config.minReductionRatio)} minimum: ${summarize(result)})`,
+          `fallback to built-in summary (below the ${percent(needed.gate)} this window needs: ${summarize(result)})`,
         );
         return next(event);
       }

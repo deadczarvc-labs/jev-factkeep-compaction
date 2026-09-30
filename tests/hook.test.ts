@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   compactSession,
   forgetAnswers,
+  pressure,
   decisionLog,
   decisionLogLines,
   resolveHookConfig,
@@ -176,5 +177,26 @@ describe('remembered answers', () => {
     const second = await compactSession(messages, config, fetchFn);
     expect(requests).toBe(1);
     expect(second.result.decisions.map((d) => d.action)).toEqual(first.result.decisions.map((d) => d.action));
+  });
+});
+
+describe('pressure', () => {
+  const config = resolveHookConfig({});
+
+  it('falls back to the fixed minimum without usage figures', () => {
+    expect(pressure(undefined, 10_000, config)).toEqual({ minReduction: 0.3, gate: 0.25 });
+  });
+
+  it('asks for what brings the context back under the trigger, overhead included', () => {
+    // 60% of a 200k window, all of it transcript: back to 50% needs 1/6, accepted at 55%
+    const bare = pressure({ tokens: 120_000, window: 200_000 }, 120_000, config);
+    expect(bare.minReduction).toBeCloseTo(1 - 100 / 120, 5);
+    expect(bare.gate).toBeCloseTo(1 - 110 / 120, 5);
+    // 20k of the 120k is system prompt and tools, which do not shrink: the transcript must give more
+    const withOverhead = pressure({ tokens: 120_000, window: 200_000 }, 100_000, config);
+    expect(withOverhead.minReduction).toBeCloseTo(1 - 80 / 100, 5);
+    // a full window needs far more; a manual /compact at low fill needs almost nothing
+    expect(pressure({ tokens: 190_000, window: 200_000 }, 190_000, config).minReduction).toBeGreaterThan(0.45);
+    expect(pressure({ tokens: 40_000, window: 200_000 }, 40_000, config)).toEqual({ minReduction: 0.05, gate: 0 });
   });
 });
