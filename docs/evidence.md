@@ -1,5 +1,8 @@
 # Evidence: facts kept by compaction
 
+The formal account of why upstream loses facts, with the per-call data behind it, is in
+[why-facts-are-lost.md](why-facts-are-lost.md).
+
 ## Method
 
 - Transcripts are real Claude Code subagent transcripts (15–60 tool calls each), one per session, never reused
@@ -21,7 +24,7 @@ lost strings.
 
 | round | transcripts / facts | fork kept | upstream kept | class of loss found | rule added |
 |---|---|---|---|---|---|
-| 0 | 4 / 50 | 41/50 | 7/50 | facts in the middle of long results | observations ≤ 3000 chars kept whole; line-aligned cuts; fact budget |
+| 0 | 4 / 50 | 41/50 | 5/50 | facts in the middle of long results | observations ≤ 3000 chars kept whole; line-aligned cuts; fact budget |
 | 1 | 4 / 50 | 44/50 | 7/50 | a log tail treated as a reproducible read; 3–6k results cut | logs are observations; observations ≤ 6000 chars kept whole |
 | 2 | 4 / 57 | 50/57 | 7/57 | failed or short reads turned into re-run notes; dense tables cut | failed reads are observations; dense dumps ≤ 20k kept; 30% fact budget; rail tiers |
 | 3 | 4 / 54 | 49/54 | 7/54 | short `ls -la` / `wc -c` reads turned into re-run notes | reads ≤ 3000 chars kept |

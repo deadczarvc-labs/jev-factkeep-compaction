@@ -14,6 +14,7 @@
 >
 > Blind held-out round 4 (5 new transcripts, 75 preregistered facts, real Jev): 70/75 facts kept against 8/75
 > upstream, 58% token reduction against 93%. Method and all rounds: [docs/evidence.md](docs/evidence.md).
+> Where and why upstream loses facts, with proofs and data: [docs/why-facts-are-lost.md](docs/why-facts-are-lost.md).
 > The same rules run in Hermes Agent: [deadczarvc/hermes-jev-compaction](https://github.com/deadczarvc/hermes-jev-compaction).
 
 Claude Code plugin that replaces the compaction summary with Jev decisions:
