@@ -22,6 +22,9 @@ import type {
   ToolUse,
 } from '../src/types.js';
 
+/** The running version, in every toast and log line (tests/hook.test.ts keeps it equal to plugin.json). */
+export const VERSION = '0.3.0-astra.13';
+
 const HOOK_DEFAULTS = {
   compactAtPercent: 60,
   minReductionRatio: 0.25,
@@ -436,8 +439,10 @@ function notify(
   },
   text: string,
 ): void {
-  $.ui.log(text);
-  $.ui.toast(text, { timeoutMs: 15_000 });
+  // The version goes last: jev-watch classifies the outcome by the text's start (`kept …`, `fallback to …`).
+  const line = `${text} · ${VERSION}`;
+  $.ui.log(line);
+  $.ui.toast(line, { timeoutMs: 15_000 });
 }
 
 // ponytail: the hook context's type is not exported under a name here; only session.cwd/id and fs.write are used.

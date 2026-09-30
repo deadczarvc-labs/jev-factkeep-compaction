@@ -3,6 +3,7 @@ import {
   compactSession,
   forgetAnswers,
   offloadOutputs,
+  VERSION,
   expireOutputs,
   saveForSummary,
   pressure,
@@ -314,5 +315,13 @@ describe('saved outputs: secrets, age and paths', () => {
     expect(await expireOutputs('R', fs, now)).toBe(1);
     expect(files.get('R/s-old/a.txt')!.text).toBe('');
     expect(files.get('R/s-new/b.txt')!.text).toBe('new output');
+  });
+});
+
+describe('version', () => {
+  it('matches plugin.json, so a toast names the version that really runs', async () => {
+    const { readFileSync } = await import('node:fs');
+    const manifest = JSON.parse(readFileSync(new URL('../.claude-plugin/plugin.json', import.meta.url), 'utf8'));
+    expect(VERSION).toBe(manifest.version);
   });
 });
