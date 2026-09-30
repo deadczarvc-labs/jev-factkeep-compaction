@@ -1,4 +1,4 @@
-import { factLines, factStubText, fullOutputNote, RAIL_TIERS, reproducible } from './compact.js';
+import { factLines, reproducible } from './compact.js';
 
 /**
  * Codex adapter. Codex compacts a chat into the user messages plus an opaque (server-encrypted) summary: every tool
@@ -172,9 +172,8 @@ export function psReads(command: string): string {
 const ERROR_MARK = /\b(?:error|failed|failure|exception|traceback|denied|not found|timed? ?out)\b/i;
 
 /**
- * Detail tiers of a digest entry, as the Claude Code hook's rails: 0 = as the fork's tier-0 rails keep it (a short
- * observation or read whole, a long one as head + fact lines + tail), 1 = fact lines only, 2 = one line naming the call
- * and where its full output is.
+ * Detail tiers of a digest entry: 0 = the output verbatim, 1 = its fact lines (a reproducible read: one re-run line),
+ * 2 = one line naming the call and where its full output is.
  */
 export type Tier = 0 | 1 | 2;
 
@@ -182,13 +181,9 @@ export type Tier = 0 | 1 | 2;
 export function callEntry(call: CodexCall, savedAt?: string, tier: Tier = 1): string {
   const head = `- ${call.id} \`${brief(call.command, 160)}\`${call.error ? ' (error)' : ''}`;
   const where = savedAt ? `full output: ${savedAt}` : 'full output: in the session rollout';
-  if (call.output.length <= SMALL_OUTPUT) return call.output ? `${head}\n${indent(call.output)}` : `${head} (no output)`;
+  if (call.output.length <= SMALL_OUTPUT || tier === 0) return call.output ? `${head}\n${indent(call.output)}` : `${head} (no output)`;
   if (tier === 2) return `${head} — ${call.output.length} chars; ${where}`;
   const read = !call.error && call.tool === 'Bash' && reproducible('Bash', { command: psReads(call.command), original: call.command });
-  if (tier === 0 && (!read || call.output.length <= RAIL_TIERS[0]!.readKeep)) {
-    const stub = factStubText(call.output, call.error, 1_000, 1_200, call.id, RAIL_TIERS[0]).replace(fullOutputNote(call.id), where);
-    return `${head}${stub === call.output ? '' : ` — ${where}`}\n${indent(stub)}`;
-  }
   if (read) return `${head} — a read (${call.output.length} chars), re-run to see it; ${where}`;
   const error = call.error || ERROR_MARK.test(call.output.slice(-600));
   const budget = Math.min(error ? 2400 : 1200, Math.max(300, Math.floor(call.output.length * 0.1)));
@@ -228,10 +223,10 @@ export function budgetFor(windowTokens?: number): number {
 }
 
 /**
- * The fact sheet for the calls; `savedAt(id)` names a call's saved full output, if any. Fill order, newest first: the
- * tier-0 text within half the budget (the newest calls are what the next step needs verbatim); then fact lines for the
- * older calls; then one line each while room is left. JEV-CMP-21: fact lines first let 35 older calls starve the three
- * newest, which a raw tail kept.
+ * The fact sheet for the calls; `savedAt(id)` names a call's saved full output, if any. Newest first: outputs verbatim
+ * within half the budget (one too long for that is skipped, not a stop); fact lines for the calls not yet placed; one line
+ * each while room is left; then the remaining room turns fact lines back into verbatim outputs. What fits whole goes whole.
+ * JEV-CMP-21: fact lines first let 35 older calls starve the three newest, which a raw tail of the same size kept.
  */
 export function buildDigest(calls: readonly CodexCall[], budgetChars: number, savedAt: (id: string) => string | undefined, sheetPath?: string): Digest {
   const cache = new Map<string, string>();
@@ -243,15 +238,19 @@ export function buildDigest(calls: readonly CodexCall[], budgetChars: number, sa
   const budget = budgetChars - 600; // the header
   const tiers = new Map<number, Tier>();
   let used = 0;
-  let i = calls.length - 1;
-  for (const [tier, limit] of [[0, budget / 2], [1, budget], [2, budget]] as const) {
-    for (; i >= 0; i--) {
-      const size = entry(i, tier).length + 1;
-      if (used + size > limit) break;
-      tiers.set(i, tier);
-      used += size;
-    }
+  const newestFirst = calls.map((_, k) => calls.length - 1 - k);
+  const place = (i: number, tier: Tier, limit: number): boolean => {
+    const size = entry(i, tier).length + 1 - (tiers.has(i) ? entry(i, tiers.get(i)!).length + 1 : 0);
+    if (used + size > limit) return false;
+    tiers.set(i, tier);
+    used += size;
+    return true;
+  };
+  for (const i of newestFirst) place(i, 0, budget / 2);
+  for (const tier of [1, 2] as const) {
+    for (const i of newestFirst) if (!tiers.has(i) && !place(i, tier, budget)) break;
   }
+  for (const i of newestFirst) if (tiers.get(i) === 1) place(i, 0, budget);
   if (!tiers.size && calls.length) tiers.set(calls.length - 1, 2); // the newest call is always listed
   const picked = [...tiers.keys()].sort((a, b) => a - b);
   const entries = calls.map((_, k) => entry(k, 1));

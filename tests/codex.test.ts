@@ -102,6 +102,18 @@ describe('buildDigest', () => {
     expect(d.full).toContain('- m0 ');
   });
 
+  it('puts every output verbatim when all fit, reads included', () => {
+    const d = buildDigest(calls, 100_000, () => undefined);
+    for (const c of calls) expect(d.text).toContain(callEntry(c, undefined, 0));
+  });
+
+  it('skips a newest output too long for half the budget instead of stopping there', () => {
+    const giant: CodexCall = { id: 'g', tool: 'Bash', command: 'Get-Content big.json', error: false, output: `${filler(1000)}\nbuild id 7f3a9c` };
+    const d = buildDigest([...many.slice(0, 20), giant], 20_600, () => undefined);
+    expect(d.text).toContain(entry(19, 0));
+    expect(d.text).not.toContain('row 999 of');
+  });
+
   it('always lists the newest call, and a roomy budget keeps short observations whole', () => {
     expect(buildDigest(calls, 10, () => undefined).listed).toBe(1);
     expect(buildDigest(calls, 100_000, () => undefined).text).toContain('gateway pid 67036');
