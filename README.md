@@ -27,7 +27,9 @@ Upstream erases every call Jev scores as stale, observations of the world includ
 - any other result keeps its head, its fact lines (errors, HTTP codes, paths, versions, ids, endpoints, counts,
   receipts; up to 30% of its size), its tail and a pointer to the full output in the transcript; results up to
   6000 chars, dense dumps and error heads are never cut;
-- rail tiers keep the token reduction above the hook's 25% fallback to the built-in summary.
+- a compaction frees what the context window needs (back to `compactAtPercent − 10` of it), result by result:
+  the step that frees the most per fact lost goes first, reads give way first, and when that is not enough
+  the oldest dropped results give way instead of the whole history falling back to the built-in summary.
 
 | six blind held-out rounds, 25 transcripts | facts kept | tokens left after compaction (current rules) |
 |---|---|---|
@@ -114,8 +116,13 @@ built-in compaction summary with the original messages.
    - one of 6000 chars or less;
    - a dense dump of 32k chars or less, where fact lines are at least half the text;
    - an error result's first 2000 chars.
-7. The rules come in tiers (`RAIL_TIERS`). The strictest tier whose char reduction clears 0.30 is used, so a
-   compaction never falls under the hook's 25% fallback because of them. `stats.railTier` reports the tier.
+7. The rules come in tiers (`RAIL_TIERS`: tier 1 is tier 0 without keeping reads, tiers 2–3 cut observations
+   further). A compaction must reach `minReduction` (default 0.30; the hook passes what the window needs, see
+   `pressure` in `hooks/fast-jev.ts`). Result by result, the step to a stricter tier that frees the most chars per
+   fact-like token lost (numbers, hex ids, paths) is taken first, until the reduction is reached. When even the
+   strictest tier is not enough — repeated compactions of a long session fill the window with kept facts — the
+   oldest dropped results keep only their fact lines, then become one-line notes; pinned calls and calls Jev decided
+   to keep are never touched. `stats.railTier` reports the strictest tier used (4 = the last resort).
    Untouched messages are returned as the same objects, and no result is ever left without its call.
 
 Jev failures, malformed answers or a missing key throw; the caller (or the

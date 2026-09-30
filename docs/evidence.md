@@ -74,8 +74,48 @@ Rounds 0–4 cover 21 transcripts and 286 facts. The rules were tuned on them.
 Compression is lower than upstream:
 
 - about 45–50% of the tokens remain after compaction, against 7–10% with upstream;
-- the rail tiers keep every compaction above the hook's 25% fallback to the built-in summary, which would lose
-  every fact.
+- a compaction frees what the context window needs rather than a fixed share, so a fallback to the built-in
+  summary, which would lose every fact, happens only when even the last resort cannot make room.
+
+## Repeated compactions of one session
+
+A long session is compacted again and again, and every compaction must free room in the context window. The rounds
+above compact each transcript once. This section replays sessions compaction by compaction.
+
+**Model** (`sim_v2.mts`): messages arrive one by one; when the context reaches 60% of the window, the rails run on
+it with Jev's recorded decisions; the hook's gate decides; a rejected compaction falls back to the built-in summary,
+after which only the first and the last 6 messages remain. The window is the transcript's size divided by `m`, so
+`m` is the session's length in windows. A fact is kept when its needle is still in its own result at the end.
+
+- **0.3.0-astra.9**: fixed minimum reduction (30% rails floor, 25% gate).
+- **0.3.0-astra.10**: the minimum follows the window (back to 50% of it, accepted at 55%), result-by-result
+  choice of what to cut, oldest results give way instead of a fallback.
+
+In-sample (the 336 facts above; the new rules were tuned on them):
+
+| session length | astra.9 | astra.10 | one-shot ceiling |
+|---|---|---|---|
+| 0.8 window | 333 (99.1%) | 335 (99.7%) | — |
+| 1 window | 311 (92.6%) | 326 (97.0%) | 331 (98.5%) |
+| 1.2 windows | 273 (81.3%), 4 fallbacks | 303 (90.2%), 0 | 320 (95.2%) |
+| 1.5 windows | 172 (51.2%), 17 fallbacks | 265 (78.9%), 3 | 301 (89.6%) |
+
+The harness is [`docs/data/sim_v2.mts`](data/sim_v2.mts). The ceiling compacts the whole session once, after the fact, to the same final size. No choice of what to cut does
+better with facts kept in the context, so 99% holds only for sessions up to about 0.8 of the window.
+
+Blind round 6 (4 new transcripts, 56 facts preregistered with the verdict rule before any run):
+
+| session length | astra.10 | astra.9 | fallbacks astra.10 / astra.9 |
+|---|---|---|---|
+| 0.8 window | 56/56 (95% CI 0.936–1.000) | 56/56 | 0 / 0 |
+| 1 window | 55/56 | 42/56 | 0 / 1 |
+| 1.2 windows | 46/56 | 40/56 | 0 / 1 |
+| 1.5 windows | 38/56 | 34/56 | 3 / 5 |
+
+- At one window: b = 13, c = 0, exact one-sided McNemar p = 1.2e-4. 12 of the 13 come from a single astra.9 fallback
+  on one transcript; per transcript astra.10 is never worse (4 of 4) and better on 2.
+- 56/56 at 0.8 of the window does not rule out a true share below 99% (lower bound 0.936).
+- Past one window, facts are lost to room, not to fallbacks.
 
 ## Hermes Agent
 
