@@ -193,3 +193,20 @@ to a lesser degree, in the earlier rounds, whose correlation was not measured) a
 p = .031 comes from one rollout and is weak evidence. Rounds 10–12 report bootstrap intervals clustered by transcript or
 session; their correlation was small (0.01–0.04). A four-transcript round can only detect effects of 40–50 points; round
 12 was sized for a 10-point effect.
+
+### What agents act on: the hybrid is reverted
+
+Rounds 10–12 scored facts an experimenter picked. A second label scores what the agent itself used: a token with a
+digit, first introduced by a tool output, that appears later in the agent's own text or tool inputs (automatic; 6.2% of
+new digit tokens; 85 transcripts, 35 sessions). On that label, with compaction at 50% and 75% of each session:
+
+| where | hybrid − regex | 95% CI (clustered by session) |
+|---|---|---|
+| lines, 10% of an output | −2.9 pts | [−5.0, −0.9] |
+| Codex sheet, 50k chars, compaction at 75% | −1.6 | [−3.2, +0.6] |
+| Codex sheet, 165k chars | +0.5 / +0.6 | [0.0, +1.1] / [+0.1, +1.5] |
+| Hermes-style stubs, rail tiers 0–3 | −1.6 … −6.7 | all below 0 |
+
+The rule written before this check kept the hybrid only if no cell fell more than 1 pt below regex; the 50k cell did, so
+the sheet is back on regex fact lines. Compressibility ranks repetitive lines low (grep hits sharing a path, listings),
+and those are often exactly what the agent opens next. Rounds 10–12 stand as measured, for the facts they measured.

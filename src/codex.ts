@@ -34,7 +34,11 @@ export function mdlLines(text: string, budget: number): string[] {
   return picked.sort((p, q) => p.i - q.i).map((x) => x.c.s);
 }
 
-/** Regex fact lines within half the budget, then MDL chunks not already inside them (JEV-CMP-25: +11.4 pts, p 2e-5). */
+/**
+ * Regex fact lines within half the budget, then MDL chunks not already inside them. Not the default: it kept more
+ * experimenter-chosen facts (JEV-CMP-25: +11.4 pts) but fewer of the tokens agents later act on (G08: sheet −1.6 pts
+ * at 50k, Hermes stubs −1.6…−6.7); MDL ranks repetitive lines low, e.g. grep hits sharing a path the agent then opens.
+ */
 export function hybridLines(text: string, budget: number): string[] {
   const regex = factLines(text, Math.floor(budget / 2));
   const used = regex.reduce((n, l) => n + l.length + 1, 0);
@@ -219,7 +223,7 @@ const ERROR_MARK = /\b(?:error|failed|failure|exception|traceback|denied|not fou
 export type Tier = 0 | 1 | 2;
 
 /** One call as digest lines: short output whole, a reproducible read as a re-run line, an observation as its facts. */
-export function callEntry(call: CodexCall, savedAt?: string, tier: Tier = 1, select: LineSelector = hybridLines): string {
+export function callEntry(call: CodexCall, savedAt?: string, tier: Tier = 1, select: LineSelector = factLines): string {
   const head = `- ${call.id} \`${brief(call.command, 160)}\`${call.error ? ' (error)' : ''}`;
   const where = savedAt ? `full output: ${savedAt}` : 'full output: in the session rollout';
   if (call.output.length <= SMALL_OUTPUT || tier === 0) return call.output ? `${head}\n${indent(call.output)}` : `${head} (no output)`;
@@ -303,7 +307,7 @@ export function buildDigest(
   savedAt: (id: string) => string | undefined,
   sheetPath?: string,
   verbatimShare = 0.5,
-  select: LineSelector = hybridLines,
+  select: LineSelector = factLines,
 ): Digest {
   const cache = new Map<string, string>();
   const entry = (i: number, tier: Tier) => {
