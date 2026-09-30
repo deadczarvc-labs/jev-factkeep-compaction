@@ -21,9 +21,10 @@ tables with no transcript content: [`data/calls.csv`](data/calls.csv) and [`data
    re-run a tool"* removed, and then also the clause *"re-running the tool would not do"*, facts kept go from 34
    to 34 to 35 of 286, and the AUC goes to 0.519 and 0.488.
 5. The fork keeps every call, decides reproducibility locally, and reduces non-reproducible results with an
-   operator that reads them. On blind held-out rounds it kept 254 of 286 facts against 34:
-   - exact McNemar p = 1.2e-66;
-   - better on 21 of 21 transcripts, sign test p = 4.8e-7.
+   operator that reads them. On six blind held-out rounds it kept 304 of 336 facts against 36:
+   - exact McNemar p ≈ 4e-81;
+   - better on 25 of 25 transcripts, sign test p = 3e-8;
+   - the current rules kept 50 of 50 on the latest round, against 2 of 50 for upstream.
 
 ## 1. The engine as a function
 
@@ -210,7 +211,9 @@ decide **which facts survive**.
    (`Read`, `Grep`, `Glob`, `ls`, `cat`, `rg`, `git log`…) when all of these hold:
    - longer than 3000 chars;
    - no failure, timeout or background-job marker;
-   - not a log, JSONL ledger, `journalctl`, `docker logs`, `-Tail` / `-Wait` or `tail -f`.
+   - not a log, JSONL ledger, `journalctl`, `docker logs`, `-Tail` / `-Wait` or `tail -f`;
+   - no command reports file metadata (`wc`, `stat`, `du`, `df`, `ls -l`, `Get-ChildItem`): counts, sizes and
+     modification times are measurements taken at one moment.
 
    When $\rho = 1$, the upstream premise really holds: a re-run gives the content back. So the result shrinks to a
    one-line re-run note.
@@ -219,10 +222,11 @@ decide **which facts survive**.
    $$R(X) = \mathrm{head}(X) \cup F(X) \cup \mathrm{tail}(X) \cup \text{pointer},$$
 
    - $F(X)$ is the set of lines that match fact patterns: errors, HTTP codes, paths, versions, ids, endpoints, counts
-     and receipts of non-idempotent calls. It is bounded by $0.3\,|X|$.
+     and receipts of non-idempotent calls. It is bounded by $0.3\,|X|$. A line longer than 200 chars (for example a
+     JSON string with escaped newlines) is split into pieces first, so a fact deep inside it is still a candidate.
    - Head and tail are cut on line boundaries.
    - The pointer names the `tool_use_id` whose full output stays in the session transcript.
-   - Never cut: observations up to 6000 chars, dense dumps up to 20k chars (fact lines ≥ 50%), and the first 2000
+   - Never cut: observations up to 6000 chars, dense dumps up to 32k chars (fact lines ≥ 50%), and the first 2000
      chars of an error.
 4. **Rail tiers.** The engine uses the strictest tier whose reduction is at least 0.30. That keeps it above the
    hook's 0.25 fallback to the built-in summary, which would lose every fact.
@@ -231,7 +235,9 @@ decide **which facts survive**.
 
 **Method.**
 
-- Each round used new transcripts (15–60 tool calls, one per session, never reused).
+- Each round used new transcripts (15–60 tool calls, one per session within a round, never reused). Round 5 drew
+  new transcripts from sessions sampled before.
+- Sections 2–6 use the 286 facts of rounds 0–4, for which the per-call tables are published.
 - Facts were preregistered before any engine ran, by an agent that had not read the rules, with sha256 logged.
 - A fact is a verbatim substring of one result that re-running the tool would not give back.
 - "Kept" means the fact is still inside its own result.
@@ -245,15 +251,18 @@ Every round tested the branch version that existed **before** that round (blind)
 | 1 | 4 | 50 | 7 | astra.3 | 44 |
 | 2 | 4 | 57 | 7 | astra.4 | 50 |
 | 3 | 4 | 54 | 7 | astra.5 | 49 |
-| 4 | 5 | 75 | 8 | astra.6 (this code) | 70 |
-| **pooled** | **21** | **286** | **34 (0.119, CI 0.084–0.162)** | | **254 (0.888, CI 0.846–0.922)** |
+| 4 | 5 | 75 | 8 | astra.6 | 70 |
+| 5 | 4 | 50 | 2 | astra.7 (this code) | 50 |
+| **pooled** | **25** | **336** | **36 (0.107, CI 0.076–0.145)** | | **304 (0.905, CI 0.868–0.934)** |
 
-- Pooled exact McNemar: $b = 220$ facts kept only by the branch, $c = 0$ kept only by upstream, $p = 2^{-219} = 1.2\times10^{-66}$.
-- Facts cluster within transcripts. At the transcript level the branch kept more on 21 of 21, sign test $p = 2^{-21} = 4.8\times10^{-7}$.
-- The final rules on rounds 0–3 keep 211/211; that figure is in-sample.
-- Round 4 is the only blind test of the final rules: 70/75, CI 0.851–0.978. The preregistered 94% target was missed by one fact.
-- Remaining losses: observation lines inside long, otherwise reproducible results.
-- The price is compression: 42–44% of tokens remain after compaction, against 7–9% upstream.
+- Pooled exact McNemar: $b = 268$ facts kept only by the branch, $c = 0$ kept only by upstream, $p = 2^{-267} \approx 4\times10^{-81}$.
+- Facts cluster within transcripts. At the transcript level the branch kept more on 25 of 25, sign test $p = 2^{-25} \approx 3\times10^{-8}$.
+- Round 5 is the blind test of the current rules. The preregistered bar was 47 of 50, with compression ≥ 0.25 on every transcript.
+  - Kept: 50/50, CI 0.929–1.000; one-sided test against 0.94, $p = 0.045$.
+  - Compression: 0.504 pooled, minimum 0.380.
+  - Jev dropped every unpinned call in that round, so it measures the keeping rules, not Jev's decisions.
+- On rounds 0–4 the current rules keep 286/286; that figure is in-sample.
+- The price is compression: about half of the tokens remain after compaction, against 7–10% upstream.
 
 ## 9. Limitations
 

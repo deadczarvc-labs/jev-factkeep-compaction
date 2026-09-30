@@ -29,10 +29,10 @@ Upstream erases every call Jev scores as stale, observations of the world includ
   6000 chars, dense dumps and error heads are never cut;
 - rail tiers keep the token reduction above the hook's 25% fallback to the built-in summary.
 
-| blind held-out rounds, 21 transcripts | facts kept | tokens left after compaction (current rules) |
+| six blind held-out rounds, 25 transcripts | facts kept | tokens left after compaction (current rules) |
 |---|---|---|
-| upstream 0.3.0 | 34 / 286 | 7–9% |
-| this fork | 254 / 286 | 42–44% |
+| upstream 0.3.0 | 36 / 336 | 7–10% |
+| this fork | 304 / 336 (latest round, current rules: 50 / 50) | 45–50% |
 
 Where and why upstream loses facts, with proofs and per-call data: [docs/why-facts-are-lost.md](docs/why-facts-are-lost.md).
 Method and every round: [docs/evidence.md](docs/evidence.md).
