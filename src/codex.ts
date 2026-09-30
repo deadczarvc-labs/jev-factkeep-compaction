@@ -208,10 +208,30 @@ export interface Digest {
   total: number;
 }
 
+/** The model's context window in tokens, as the rollout last reports it. */
+export function contextWindow(jsonl: string): number | undefined {
+  const found = [...jsonl.matchAll(/"model_context_window"\s*:\s*(\d+)/g)].pop();
+  return found ? Number(found[1]) : undefined;
+}
+
+export const MIN_BUDGET = 18_000;
+export const MAX_BUDGET = 200_000;
+
 /**
- * The fact sheet for the calls; `savedAt(id)` names a call's saved full output, if any. Fill order within the budget,
- * each pass newest first: fact lines (tier 1) until one no longer fits; tier 0 for those; one line (tier 2) for the older
- * calls while room is left. A one-line entry carries no fact, so it only takes what the facts leave.
+ * Digest size in chars: 5% of the model window (≈ 4 chars a token), within [MIN_BUDGET, MAX_BUDGET]. A compacted Codex
+ * chat keeps only the user messages and a summary, so the window has room; a fixed size ignores it (JEV-CMP-21: 18k chars
+ * against 0.3–0.9M chars of output reached back ~35 calls, no better than a raw tail of the same size).
+ */
+export function budgetFor(windowTokens?: number): number {
+  if (!windowTokens) return MIN_BUDGET;
+  return Math.min(MAX_BUDGET, Math.max(MIN_BUDGET, Math.round(windowTokens * 4 * 0.05)));
+}
+
+/**
+ * The fact sheet for the calls; `savedAt(id)` names a call's saved full output, if any. Fill order, newest first: the
+ * tier-0 text within half the budget (the newest calls are what the next step needs verbatim); then fact lines for the
+ * older calls; then one line each while room is left. JEV-CMP-21: fact lines first let 35 older calls starve the three
+ * newest, which a raw tail kept.
  */
 export function buildDigest(calls: readonly CodexCall[], budgetChars: number, savedAt: (id: string) => string | undefined, sheetPath?: string): Digest {
   const cache = new Map<string, string>();
@@ -224,31 +244,21 @@ export function buildDigest(calls: readonly CodexCall[], budgetChars: number, sa
   const tiers = new Map<number, Tier>();
   let used = 0;
   let i = calls.length - 1;
-  for (; i >= 0; i--) {
-    const size = entry(i, 1).length + 1;
-    if (tiers.size && used + size > budget) break; // the newest call is always listed
-    tiers.set(i, 1);
-    used += size;
-  }
-  for (const j of [...tiers.keys()]) {
-    const delta = entry(j, 0).length - entry(j, 1).length;
-    if (used + delta <= budget) {
-      tiers.set(j, 0);
-      used += delta;
+  for (const [tier, limit] of [[0, budget / 2], [1, budget], [2, budget]] as const) {
+    for (; i >= 0; i--) {
+      const size = entry(i, tier).length + 1;
+      if (used + size > limit) break;
+      tiers.set(i, tier);
+      used += size;
     }
   }
-  for (; i >= 0; i--) {
-    const size = entry(i, 2).length + 1;
-    if (used + size > budget) break;
-    tiers.set(i, 2);
-    used += size;
-  }
+  if (!tiers.size && calls.length) tiers.set(calls.length - 1, 2); // the newest call is always listed
   const picked = [...tiers.keys()].sort((a, b) => a - b);
   const entries = calls.map((_, k) => entry(k, 1));
   const older = calls.length - picked.length;
   const header = [
-    'fast-jev-compaction (Codex): the chat was just compacted, so tool outputs left the context. They follow in call order,',
-    'the newest in full or as fact lines, older ones as one line. "re-run" marks a read you can repeat; every long output',
+    'fast-jev-compaction (Codex): the chat was just compacted, so tool outputs left the context. They follow in call order:',
+    'the newest in full, older ones as fact lines, the oldest as one line. "re-run" marks a read you can repeat; every long output',
     'is saved in full (secret values masked): read the file before relying on a detail not shown here.',
     older ? `${older} older call(s) are not listed here${sheetPath ? `; all ${entries.length}: ${sheetPath}` : ''}.` : '',
   ].filter(Boolean).join('\n');

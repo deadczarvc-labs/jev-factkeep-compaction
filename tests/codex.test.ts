@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { expire, run } from '../codex/fact-sheet.js';
-import { buildDigest, callEntry, parseRollout, type CodexCall } from '../src/codex.js';
+import { budgetFor, buildDigest, callEntry, contextWindow, MAX_BUDGET, MIN_BUDGET, parseRollout, type CodexCall } from '../src/codex.js';
 
 const item = (payload: object) => JSON.stringify({ type: 'response_item', payload });
 const execWrap = (output: string, code = 0) => [
@@ -83,30 +83,42 @@ describe('PowerShell reads', () => {
 
 describe('buildDigest', () => {
   const calls = parseRollout(rollout);
-  const size = (i: number, tier: 0 | 1 | 2) => callEntry(calls[i]!, undefined, tier).length + 1;
-  const HEADER = 600;
+  // 150 observations of ~2 KB, each with one fact line.
+  const many: CodexCall[] = Array.from({ length: 150 }, (_, i) => ({
+    id: `m${i}`, tool: 'Bash', command: `curl -s http://127.0.0.1:${9000 + i}/health`, error: false,
+    output: `${filler(18)}\nworker pid ${40000 + i} listening on 127.0.0.1:${9000 + i}\n${filler(18)}`,
+  }));
+  const entry = (i: number, tier: 0 | 1 | 2) => callEntry(many[i]!, undefined, tier);
 
-  it('gives the newest calls their fact lines first and says how many older ones it left out', () => {
-    const d = buildDigest(calls, HEADER + size(4, 1) + size(3, 1), () => undefined, 'F:/x/facts.md');
-    expect(d).toMatchObject({ listed: 2, total: 5 });
-    expect(d.text).toContain('Error: expected 3 to be 4');
-    expect(d.text).not.toContain('- c3 ');
-    expect(d.text).toMatch(/3 older call\(s\) are not listed here; all 5: F:\/x\/facts\.md/);
-    expect(d.full).toContain('- c1 ');
-    expect(buildDigest(calls, 10, () => undefined).listed).toBe(1); // the newest call is always listed
+  it('keeps the newest calls whole within half the budget, then fact lines, then one line, and counts the rest', () => {
+    const d = buildDigest(many, 20_600, () => undefined, 'F:/x/facts.md');
+    expect(d.text).toContain(entry(149, 0));
+    expect(d.text).toContain('row 5 of an ordinary listing');
+    expect(d.text).toContain(entry(130, 1));
+    expect(d.text).not.toContain(entry(130, 0));
+    expect(d.listed).toBeLessThan(150);
+    expect(d.text).toMatch(new RegExp(`${150 - d.listed} older call\\(s\\) are not listed here; all 150: F:/x/facts\\.md`));
+    expect(d.text.length).toBeLessThanOrEqual(20_600);
+    expect(d.full).toContain('- m0 ');
   });
 
-  it('names older calls in one line only with the room the fact lines leave', () => {
-    const d = buildDigest(calls, HEADER + size(4, 1) + size(3, 1) + size(2, 1) + size(1, 1) + size(0, 2), () => undefined);
-    expect(d.listed).toBe(5);
-    expect(d.text).toContain('gateway pid 67036');
-    expect(d.text).toMatch(/- c1 `[^`]*` — \d+ chars; full output/);
-    expect(d.text).not.toContain('re-run to see it');
+  it('always lists the newest call, and a roomy budget keeps short observations whole', () => {
+    expect(buildDigest(calls, 10, () => undefined).listed).toBe(1);
+    expect(buildDigest(calls, 100_000, () => undefined).text).toContain('gateway pid 67036');
   });
+});
 
-  it('upgrades the newest calls to the tier-0 text when there is room', () => {
-    const roomy = buildDigest(calls, 100_000, () => undefined);
-    expect(roomy.text).toContain('row 3 of an ordinary listing'); // tier 0 keeps a short observation whole
+describe('budgetFor', () => {
+  it('is 5% of the model window in chars, within its floor and cap', () => {
+    expect(budgetFor(undefined)).toBe(MIN_BUDGET);
+    expect(budgetFor(64_000)).toBe(MIN_BUDGET);
+    expect(budgetFor(272_000)).toBe(54_400);
+    expect(budgetFor(2_000_000)).toBe(MAX_BUDGET);
+  });
+  it('reads the last model_context_window the rollout reports', () => {
+    const jsonl = ['{"type":"event_msg","payload":{"type":"task_started","model_context_window":272000}}', '{"x":{"model_context_window": 828400}}'].join('\n');
+    expect(contextWindow(jsonl)).toBe(828_400);
+    expect(contextWindow(rollout)).toBeUndefined();
   });
 });
 

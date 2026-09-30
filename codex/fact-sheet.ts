@@ -5,14 +5,14 @@
  *   F:\nodejs\node.exe --import file:///<repo>/node_modules/tsx/dist/loader.mjs <repo>/codex/fact-sheet.ts
  *
  * Saved under `<CODEX_HOME>/fast-jev/cache/<session>/` (a `cache` folder, which backups and indexers commonly skip);
- * folders older than 30 days are deleted. `FJC_CODEX_SAVE_OUTPUTS=0` saves nothing; `FJC_CODEX_BUDGET` sets the
+ * folders older than 30 days are deleted. `FJC_CODEX_SAVE_OUTPUTS=0` saves nothing; `FJC_CODEX_BUDGET` overrides the
  * digest size in chars. Fails open: any error writes one line to `errors.log` there and adds nothing.
  */
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildDigest, parseRollout, SMALL_OUTPUT } from '../src/codex.js';
+import { budgetFor, buildDigest, contextWindow, parseRollout, SMALL_OUTPUT } from '../src/codex.js';
 import { redactSecrets } from '../src/secrets.js';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -51,7 +51,8 @@ export interface HookInput {
 /** The hook's stdout for one event ('' = add nothing). */
 export function run(input: HookInput, env: NodeJS.ProcessEnv = process.env): string {
   if (input.hook_event_name !== 'SessionStart' || input.source !== 'compact' || !input.transcript_path) return '';
-  const calls = parseRollout(readFileSync(input.transcript_path, 'utf8'));
+  const rollout = readFileSync(input.transcript_path, 'utf8');
+  const calls = parseRollout(rollout);
   if (!calls.length) return '';
   const root = cacheRoot(env);
   const save = env['FJC_CODEX_SAVE_OUTPUTS'] !== '0';
@@ -67,7 +68,7 @@ export function run(input: HookInput, env: NodeJS.ProcessEnv = process.env): str
     }
   }
   const sheet = save ? join(dir, 'facts.md') : undefined;
-  const digest = buildDigest(calls, Number(env['FJC_CODEX_BUDGET'] || 18_000), (id) => saved.get(id), sheet);
+  const digest = buildDigest(calls, Number(env['FJC_CODEX_BUDGET']) || budgetFor(contextWindow(rollout)), (id) => saved.get(id), sheet);
   if (sheet) writeFileSync(sheet, redactSecrets(digest.full), 'utf8');
   mkdirSync(root, { recursive: true });
   appendFileSync(join(root, 'log.jsonl'), `${JSON.stringify({ ts: new Date().toISOString(), session: input.session_id, calls: digest.total, listed: digest.listed, chars: digest.text.length, saved: saved.size, version: version() })}\n`);
