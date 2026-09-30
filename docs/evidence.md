@@ -144,3 +144,21 @@ the same facts as the fork:
 
 - round 4: 70/75, against 13/75 for its previous version;
 - round 5: 50/50, against 4/50.
+
+## Codex
+
+The Codex adapter (`codex/fact-sheet.ts`, see the README) was checked on Codex rollouts the author had not looked at,
+with the same method: facts preregistered blind to the adapter, then one run. Here the question is what the model
+still has after a Codex compaction, which drops every tool output: the fact sheet in context, the saved files, and, as a
+baseline, the newest raw outputs cut to the same size.
+
+| round | adapter | rollouts / facts | sheet in context | raw tail, same size | sheet or saved | McNemar |
+|---|---|---|---|---|---|---|
+| 6 | fixed 18k chars, fact lines first | 4 / 55 | 14/55 | 13/55 | 55/55 | b = 4, c = 3, p = 1 |
+| 7 | 5% of the window, newest verbatim first | 4 / 59 | 59/59 | 53/59 | 59/59 | b = 6, c = 0, p = 0.031 |
+
+Round 6 failed its hypothesis: at 18k chars against 0.2–0.9M chars of output, the sheet reached back about 35 calls,
+like the raw tail, and fact lines for older calls took the room the newest outputs needed. Round 7 sized the sheet from
+the model's window (165 680 chars for an 828k-token window) and filled it newest first, verbatim before fact lines.
+All six facts it kept and the tail lost come from one rollout, the one with the most output (563k chars); in the other
+three the budget covered the facts either way. The hook ran in 36–114 ms.

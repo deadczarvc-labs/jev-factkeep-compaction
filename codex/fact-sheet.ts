@@ -2,7 +2,7 @@
  * Codex `SessionStart` hook (matcher `compact`): after Codex compacts a chat, give the model the facts of the tool
  * outputs the compaction removed, and save each long output in full (secret values masked).
  *
- *   F:\nodejs\node.exe --import file:///<repo>/node_modules/tsx/dist/loader.mjs <repo>/codex/fact-sheet.ts
+ *   node --import file:///<repo>/node_modules/tsx/dist/loader.mjs <repo>/codex/fact-sheet.ts
  *
  * Saved under `<CODEX_HOME>/fast-jev/cache/<session>/` (a `cache` folder, which backups and indexers commonly skip);
  * folders older than 30 days are deleted. `FJC_CODEX_SAVE_OUTPUTS=0` saves nothing; `FJC_CODEX_BUDGET` overrides the

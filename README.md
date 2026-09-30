@@ -242,6 +242,39 @@ To run from a checkout without installing: `CLAUDE_CODE_ENABLE_FUNCTION_HOOKS=1 
 from the repository root. No publishing step is required; the marketplace is
 just the repo's `.claude-plugin/marketplace.json`.
 
+## Codex
+
+Codex compacts a chat into the user messages plus a summary its server encrypts: every tool output leaves the
+context, and what the summary kept cannot be checked. Right after that, before the next model request, Codex runs
+`SessionStart` hooks whose matcher is `compact` and adds what they return to the context.
+[`codex/fact-sheet.ts`](codex/fact-sheet.ts) is such a hook. It reads the session rollout and saves each long tool
+output in full, secret values masked, under `<CODEX_HOME>/fast-jev/cache/<session>/` (30 days). It returns a fact
+sheet sized at 5% of the model's window: the newest outputs verbatim within half of it, older ones as their fact lines
+(the rules of the Claude Code hook; a reproducible read becomes a re-run line), the oldest as one line each, and the
+path of `facts.md`, which lists them all. It makes no Jev call and takes tens of milliseconds.
+
+Install: `npm install` in a checkout, then add a group at the **end** of `SessionStart` in `~/.codex/hooks.json`
+(Codex keys hook trust by position, so a group inserted earlier un-trusts the ones after it) and trust it in `/hooks`:
+
+```json
+{
+  "matcher": "compact",
+  "hooks": [{
+    "type": "command",
+    "command": "node --import file:///<checkout>/node_modules/tsx/dist/loader.mjs <checkout>/codex/fact-sheet.ts",
+    "timeout": 30,
+    "statusMessage": "Restoring tool-output facts after compaction",
+    "additionalContextLimit": 70000
+  }]
+}
+```
+
+`additionalContextLimit` (tokens) must cover the sheet, up to 200k chars, or Codex swaps its middle for a preview.
+`FJC_CODEX_SAVE_OUTPUTS=0` saves nothing; `FJC_CODEX_BUDGET` sets the size in chars.
+
+On 4 held-out Codex rollouts (59 preregistered facts) the sheet kept 59/59 in context, against 53/59 for the newest raw
+outputs of the same size, and 59/59 with the saved files ([evidence](docs/evidence.md#codex)).
+
 ## Development
 
 ```sh
