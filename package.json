@@ -20,7 +20,7 @@
   ],
   "scripts": {
     "build": "tsc",
-    "typecheck": "tsc --noEmit && npm run typecheck:hooks",
+    "typecheck": "tsc --noEmit && npm run typecheck:hooks && tsc -p tsconfig.codex.json",
     "test": "vitest run",
     "demo": "tsx examples/demo.ts",
     "typecheck:hooks": "tsc -p tsconfig.hooks.json",
