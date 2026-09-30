@@ -72,7 +72,13 @@ built-in compaction summary with the original messages.
    `[… N chars omitted …]` note; old tool calls reduced to one line each
    (`t12 Read file_path=src/a.ts → ok 480ch`); old call-less messages left
    out; runs of old call-only messages folded into one entry. If it still
-   does not fit, compaction throws. Tokens are estimated without a tokenizer (a
+   does not fit (long sessions), the calls are split into contiguous windows,
+   halved until each window's state fits: a window keeps the goal, the first
+   message, the pinned tail and its own messages in full. A call that fits no
+   window gets the fact rails without Jev, so compaction never throws for size.
+   On four real overflowing sessions (28–31k) every compaction went through
+   with 2 windows; where the full state fits, windows agree with it on 99.7% of
+   decisions. Tokens are estimated without a tokenizer (a
    word per six letters, half a token per digit, ~one per other symbol),
    calibrated to land a little above the counts Jev reports.
 4. For every non-pinned call Jev gets two `noul` questions: should the **call**
@@ -81,8 +87,8 @@ built-in compaction summary with the original messages.
    tool would not do).
 5. Questions are split into as many requests as needed so state plus questions
    stays under `maxRequestTokens` (30k by default, under Jev's 32k request
-   limit). The same full state is resent with every request; requests run
-   concurrently and their answers are merged.
+   limit). The same state (or the window's state) is resent with every request;
+   requests run concurrently and their answers are merged.
 6. Decisions per call, against `keepThreshold`:
    - `keepResult ≥ threshold` → keep call and result;
    - else `keepCall ≥ threshold` → keep the call and reduce the result;
@@ -90,24 +96,26 @@ built-in compaction summary with the original messages.
 
    Nothing is erased. How a result is reduced depends on what it is:
    - A **reproducible read** is a read of files: `Read`, `Grep`, `Glob`, `ls`, `cat`, `rg`, `git log`…, and not
-     logs, JSONL ledgers or followed streams. It shrinks to a one-line re-run note, but only when it is longer than
+     logs, JSONL ledgers, followed streams or file metadata (`wc`, `stat`, `du`, `df`, `ls -l`, `Get-ChildItem`),
+     alone or inside a compound command. It shrinks to a one-line re-run note, but only when it is longer than
      3000 chars and shows no failure, timeout or background-job marker.
    - Any other result is an **observation**, which a re-run would not give back. It keeps:
      - its head, cut on a line boundary;
      - its fact lines (errors, HTTP codes, paths, versions, ids, endpoints, counts, receipts), up to 30% of its size;
+       a line longer than 200 chars is split into pieces first, so a fact deep inside it still counts;
      - its tail;
      - a note naming the `tool_use_id` whose full output stays in the session transcript.
 
    Three kinds of observation are never cut:
    - one of 6000 chars or less;
-   - a dense dump of 20k chars or less, where fact lines are at least half the text;
+   - a dense dump of 32k chars or less, where fact lines are at least half the text;
    - an error result's first 2000 chars.
 7. The rules come in tiers (`RAIL_TIERS`). The strictest tier whose char reduction clears 0.30 is used, so a
    compaction never falls under the hook's 25% fallback because of them. `stats.railTier` reports the tier.
    Untouched messages are returned as the same objects, and no result is ever left without its call.
 
-Jev failures, malformed answers, a missing key, or a history that cannot be
-fitted throw; the caller (or the Claude Code hook) decides what to fall back to.
+Jev failures, malformed answers or a missing key throw; the caller (or the
+Claude Code hook) decides what to fall back to.
 
 ## Install and usage
 
