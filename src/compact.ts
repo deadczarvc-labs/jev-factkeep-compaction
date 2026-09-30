@@ -141,7 +141,7 @@ function truncatedResultText(text: string, isError: boolean, headChars: number):
 }
 
 // Fork (astra-hub, 2026-09-30): the upstream rules lost 10 of 10 content facts on a real transcript
-// (session-tracks/jev-tails-20260929/compaction-compare.md). Facts sit in the lines a later step quotes:
+// (docs/evidence.md). Facts sit in the lines a later step quotes:
 // errors, paths, versions, ids, endpoints, HTTP codes, counts. A reduced result keeps them.
 const FACT_PATTERNS: readonly RegExp[] = [
   /\b(error|errors|failed|failure|fail|exception|traceback|denied|refused|invalid|not found|timed? ?out|fatal|panic|warning)\b|invalid_\w+/i,

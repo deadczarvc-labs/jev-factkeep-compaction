@@ -1,15 +1,20 @@
 # fast-jev-compaction
 
-> **astra-hub fork (`astra-facts`, 0.3.0-astra.1).** The upstream goal (below, "What and why", step 4) is to drop
-> what re-running the tool would give back and never lose an exact error, path or command. The implementation
-> erased every call under the threshold, observations of the world included: on a real 22-call transcript the
-> engine itself kept 0 of 6 non-reproducible facts (HTTP 401/404, Error 1101, refused port, invalid_token, pid).
-> The fork splits by that goal. A dropped reproducible read of files (Read, Grep, Glob, ls, cat, rg, sha256sum,
-> git log...) shrinks to one line: the call plus "re-run to see". Any other dropped call (network, processes,
-> logs, tests, side effects, MCP) becomes a fact stub: brief input, a 200-char head, the lines with errors,
-> paths, versions, ids, endpoints, HTTP codes and counts (up to 360 chars), and a 120-char tail. Errors keep
-> 2000 chars. Same transcript: non-reproducible facts 6/6 kept by the engine (upstream 0/6), all facts 12/12,
-> token reduction 43% (upstream 66%).
+> **Fact-keeping fork of [tamaratran/fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction)**
+> (plugin `fast-jev-compaction` 0.3.0-astra.6, a drop-in replacement). The upstream goal is to drop what
+> re-running a tool would give back and never lose an exact error, path or command. Upstream erases every call
+> Jev scores as stale, observations of the world included. Here nothing is erased:
+>
+> - a reproducible read of files (`Read`, `Grep`, `Glob`, `ls`, `cat`, `rg`, `git log`…) longer than 3000 chars
+>   shrinks to a one-line re-run note;
+> - any other result keeps its head, its fact lines (errors, HTTP codes, paths, versions, ids, endpoints,
+>   counts, receipts; up to 30% of its size), its tail and a pointer to the full output in the transcript;
+>   results up to 6000 chars, dense dumps and error heads are never cut;
+> - rail tiers keep the token reduction above the hook's 25% fallback to the built-in summary.
+>
+> Blind held-out round 4 (5 new transcripts, 75 preregistered facts, real Jev): 70/75 facts kept against 8/75
+> upstream, 58% token reduction against 93%. Method and all rounds: [docs/evidence.md](docs/evidence.md).
+> The same rules run in Hermes Agent: [deadczarvc/hermes-jev-compaction](https://github.com/deadczarvc/hermes-jev-compaction).
 
 Claude Code plugin that replaces the compaction summary with Jev decisions:
 every tool call and result is scored in one fast request, stale ones are
@@ -57,12 +62,26 @@ built-in compaction summary with the original messages.
    concurrently and their answers are merged.
 6. Decisions per call, against `keepThreshold`:
    - `keepResult ≥ threshold` → keep call and result;
-   - else `keepCall ≥ threshold` → keep the call, truncate the result to its
-     first `truncateHeadChars` characters plus a one-line note;
-   - else → remove the call together with its result.
-7. The message list is rebuilt: a message that loses all its content is
-   removed, untouched messages are returned as the same objects, and no result
-   is ever left without its call.
+   - else `keepCall ≥ threshold` → keep the call and reduce the result;
+   - else → keep a brief call (input fields cut to 200 chars) and reduce the result.
+
+   Nothing is erased. How a result is reduced depends on what it is:
+   - A **reproducible read** is a read of files: `Read`, `Grep`, `Glob`, `ls`, `cat`, `rg`, `git log`…, and not
+     logs, JSONL ledgers or followed streams. It shrinks to a one-line re-run note, but only when it is longer than
+     3000 chars and shows no failure, timeout or background-job marker.
+   - Any other result is an **observation**, which a re-run would not give back. It keeps:
+     - its head, cut on a line boundary;
+     - its fact lines (errors, HTTP codes, paths, versions, ids, endpoints, counts, receipts), up to 30% of its size;
+     - its tail;
+     - a note naming the `tool_use_id` whose full output stays in the session transcript.
+
+   Three kinds of observation are never cut:
+   - one of 6000 chars or less;
+   - a dense dump of 20k chars or less, where fact lines are at least half the text;
+   - an error result's first 2000 chars.
+7. The rules come in tiers (`RAIL_TIERS`). The strictest tier whose char reduction clears 0.30 is used, so a
+   compaction never falls under the hook's 25% fallback because of them. `stats.railTier` reports the tier.
+   Untouched messages are returned as the same objects, and no result is ever left without its call.
 
 Jev failures, malformed answers, a missing key, or a history that cannot be
 fitted throw; the caller (or the Claude Code hook) decides what to fall back to.
@@ -70,7 +89,7 @@ fitted throw; the caller (or the Claude Code hook) decides what to fall back to.
 ## Install and usage
 
 ```sh
-npm install fast-jev-compaction
+npm install fast-jev-compaction   # upstream package; for this fork build a checkout: npm install && npm run build
 export TYPESAFE_API_KEY=...
 ```
 
@@ -157,9 +176,12 @@ Then add this repository as a plugin marketplace and install the plugin,
 either from the shell or as slash commands inside a session:
 
 ```sh
-claude plugin marketplace add tamaratran/fast-jev-compaction
+claude plugin marketplace add deadczarvc/jev-factkeep-compaction
 claude plugin install fast-jev-compaction@fast-jev-compaction
 ```
+
+The marketplace and plugin keep the upstream names, so this fork replaces an upstream install: remove the
+upstream marketplace first (`claude plugin marketplace remove fast-jev-compaction`).
 
 The install prompts for the plugin options (API key, thresholds, `truncateHeadChars`,
 …); leave them at their defaults to use `TYPESAFE_API_KEY` from the environment.

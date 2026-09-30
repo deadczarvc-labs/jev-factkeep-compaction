@@ -1,7 +1,7 @@
 {
   "name": "fast-jev-compaction",
   "version": "0.3.0-astra.6",
-  "description": "Verbatim Jev-guided compaction for Claude Code sessions (astra-hub fork: dropped calls become fact stubs, never erased).",
+  "description": "Verbatim Jev-guided compaction for Claude Code sessions (fact-keeping fork: dropped calls keep their facts, never erased).",
   "license": "MIT",
   "userConfig": {
     "apiKey": {
