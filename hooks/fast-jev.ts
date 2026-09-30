@@ -23,7 +23,7 @@ import type {
 } from '../src/types.js';
 
 /** The running version, in every toast and log line (tests/hook.test.ts keeps it equal to plugin.json). */
-export const VERSION = '0.3.0-astra.14';
+export const VERSION = '0.3.0-astra.15';
 
 const HOOK_DEFAULTS = {
   compactAtPercent: 60,
