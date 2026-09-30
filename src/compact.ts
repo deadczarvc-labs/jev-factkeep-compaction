@@ -181,6 +181,50 @@ function pieces(line: string): string[] {
   return out;
 }
 
+const DIGIT_TOKEN = /[A-Za-z0-9][A-Za-z0-9_.:/@#-]{5,}/g;
+export const digitTokens = (s: string): string[] =>
+  (s.match(DIGIT_TOKEN) ?? []).map((t) => t.replace(/[.:,]+$/, '')).filter((t) => /\d/.test(t));
+
+/** Tokens with a digit that a tool output introduced and a later tool input used: what the agent acts on. */
+export function reusedTokens(messages: readonly Message[]): Set<string> {
+  const seen = new Set<string>();
+  const reused = new Set<string>();
+  for (const message of messages) {
+    for (const tool of message.toolUses) {
+      let input = '';
+      try {
+        input = JSON.stringify(tool.input);
+      } catch {
+        input = '';
+      }
+      for (const t of digitTokens(input)) if (seen.has(t)) reused.add(t);
+      if (tool.text !== undefined) for (const t of digitTokens(tool.text)) seen.add(t);
+    }
+    for (const result of message.toolResults ?? []) for (const t of digitTokens(result.text)) seen.add(t);
+  }
+  return reused;
+}
+
+/**
+ * Lines holding a token the agent already used first (up to 400 chars each), regex fact lines fill the rest. Past use
+ * predicts later use (G13, tokens used after a compaction: stubs +1.7…+9.1 pts, Codex sheet +0.8…+3.7, CIs above 0).
+ */
+export function reuseFirstLines(text: string, budget: number, reused: ReadonlySet<string>): string[] {
+  const pinned: string[] = [];
+  let used = 0;
+  if (reused.size) {
+    for (const ln of text.split('\n')) {
+      const s = ln.slice(0, 400);
+      if (used + s.length + 1 <= budget && digitTokens(s).some((t) => reused.has(t))) {
+        pinned.push(s);
+        used += s.length + 1;
+      }
+    }
+  }
+  if (!pinned.length) return factLines(text, budget);
+  return [...pinned, ...factLines(text, budget - used).filter((x) => !pinned.some((p) => p.includes(x) || x.includes(p)))];
+}
+
 /** Lines of `text` that carry facts, most fact-dense first until `budget` chars, returned in text order. */
 export function factLines(text: string, budget: number): string[] {
   const scored = text
@@ -244,7 +288,15 @@ export function fullOutputNote(id: string): string {
 }
 
 /** A reduced result that keeps its head, its fact lines and its tail; an error keeps more. */
-export function factStubText(text: string, isError: boolean, headChars: number, factBudget: number, id?: string, rails: Rails = RAIL_TIERS[0]!): string {
+export function factStubText(
+  text: string,
+  isError: boolean,
+  headChars: number,
+  factBudget: number,
+  id?: string,
+  rails: Rails = RAIL_TIERS[0]!,
+  reused: ReadonlySet<string> = new Set(),
+): string {
   const headKeep = isError ? Math.max(headChars, ERROR_KEEP_CHARS) : headChars;
   if (text.length <= Math.max(rails.small, headKeep + TAIL_CHARS + 120)) return text;
   const headNl = text.lastIndexOf('\n', headKeep);
@@ -252,7 +304,7 @@ export function factStubText(text: string, isError: boolean, headChars: number, 
   const tailNl = text.indexOf('\n', text.length - TAIL_CHARS);
   const tailStart = tailNl === -1 || tailNl >= text.length - 1 ? text.length - TAIL_CHARS : tailNl + 1;
   if (text.length <= rails.denseKeep && factLines(text, Number.MAX_SAFE_INTEGER).reduce((n, l) => n + l.length + 1, 0) >= text.length * rails.denseShare) return text;
-  const facts = factLines(text.slice(headEnd, tailStart), Math.max(factBudget, Math.floor(text.length * rails.share)));
+  const facts = reuseFirstLines(text.slice(headEnd, tailStart), Math.max(factBudget, Math.floor(text.length * rails.share)), reused);
   const where = id ? fullOutputNote(id) : 'the full output stays in the session transcript';
   return `${text.slice(0, headEnd)}\n[fast-jev-compaction omitted ${tailStart - headEnd} chars of this tool result${isError ? ' (error)' : ''}${
     facts.length ? `; kept its ${facts.length} fact line(s)` : ''
@@ -422,13 +474,14 @@ function applyFactStubs(
   railsFor: Rails | ((toolUseId: string) => Rails),
 ): Message[] {
   const rerunnable = rerunnableIds(messages);
+  const reused = reusedTokens(messages);
   const rails = (id: string): Rails => (typeof railsFor === 'function' ? railsFor(id) : railsFor);
   // A read's output is replaced by a re-run line only when it is long and reads like a plain read: a short output is
   // cheap and kept like any observation, and a read that timed out, failed or went to the background is an
   // observation (JEV-CMP-15 held out: 4 facts lost to re-run lines on 604-909 char outputs).
   // Idempotent: a result an earlier compaction already reduced carries our marker and is final; reducing a fact stub
   // again would cut the fact lines it kept.
-  const reduce = (id: string, text: string, isError: boolean) => reducedText(id, text, isError, headChars, rails(id), rerunnable);
+  const reduce = (id: string, text: string, isError: boolean) => reducedText(id, text, isError, headChars, rails(id), rerunnable, reused);
   return messages.map((message) => {
     let changed = false;
     const toolUses = message.toolUses.map((tool) => {
@@ -467,10 +520,18 @@ function rerunnableIds(messages: readonly Message[]): Set<string> {
 }
 
 /** One result under one rail tier (see applyFactStubs). */
-function reducedText(id: string, text: string, isError: boolean, headChars: number, rails: Rails, rerunnable: ReadonlySet<string>): string {
+function reducedText(
+  id: string,
+  text: string,
+  isError: boolean,
+  headChars: number,
+  rails: Rails,
+  rerunnable: ReadonlySet<string>,
+  reused: ReadonlySet<string> = new Set(),
+): string {
   if (COMPACTED_MARK.test(text)) return text;
   if (rerunnable.has(id) && !isError && text.length > rails.readKeep && !READ_OBSERVATION.test(text)) return rerunNote(text, id);
-  return factStubText(text, isError, headChars, FACT_BUDGET_CHARS, id, rails);
+  return factStubText(text, isError, headChars, FACT_BUDGET_CHARS, id, rails, reused);
 }
 
 /** Characters of text, tool input and tool output a message holds. */
@@ -562,6 +623,7 @@ function greedyRails(
   const byId = new Map(calls.map((call) => [call.id, call]));
   const dropped = new Set(decisions.filter((d) => d.action !== 'keep').map((d) => byId.get(d.id)?.tool_use_id).filter((id): id is string => !!id));
   const rerunnable = rerunnableIds(messages);
+  const reused = reusedTokens(messages);
   const texts = new Map<string, { text: string; isError: boolean }>();
   for (const m of messages) for (const r of m.toolResults ?? []) if (dropped.has(r.tool_use_id)) texts.set(r.tool_use_id, { text: r.text, isError: r.isError ?? false });
   const lengths = new Map<string, number>();
@@ -570,7 +632,7 @@ function greedyRails(
     const hit = lengths.get(key);
     if (hit !== undefined) return hit;
     const t = texts.get(id)!;
-    const n = reducedText(id, t.text, t.isError, headChars, RAIL_TIERS[tier]!, rerunnable).length;
+    const n = reducedText(id, t.text, t.isError, headChars, RAIL_TIERS[tier]!, rerunnable, reused).length;
     lengths.set(key, n);
     return n;
   };
@@ -582,7 +644,7 @@ function greedyRails(
     let set = tokens.get(key);
     if (!set) {
       const t = texts.get(id)!;
-      set = new Set(reducedText(id, t.text, t.isError, headChars, RAIL_TIERS[tier]!, rerunnable).match(FACT_TOKEN) ?? []);
+      set = new Set(reducedText(id, t.text, t.isError, headChars, RAIL_TIERS[tier]!, rerunnable, reused).match(FACT_TOKEN) ?? []);
       tokens.set(key, set);
     }
     return set;

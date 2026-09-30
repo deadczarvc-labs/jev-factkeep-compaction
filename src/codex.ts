@@ -1,12 +1,8 @@
 import { deflateRawSync } from 'node:zlib';
-import { factLines, reproducible } from './compact.js';
+import { digitTokens, factLines, reproducible, reuseFirstLines } from './compact.js';
 
 /** Picks the lines of `text` worth keeping within `budget` chars, in text order. */
 export type LineSelector = (text: string, budget: number) => string[];
-
-const DIGIT_TOKEN = /[A-Za-z0-9][A-Za-z0-9_.:/@#-]{5,}/g;
-const digitTokens = (s: string): string[] =>
-  (s.match(DIGIT_TOKEN) ?? []).map((t) => t.replace(/[.:,]+$/, '')).filter((t) => /\d/.test(t));
 
 /** Tokens with a digit that an output introduced and a later call's input used: what the agent acts on. */
 export function reusedTokens(calls: readonly CodexCall[]): Set<string> {
@@ -19,24 +15,9 @@ export function reusedTokens(calls: readonly CodexCall[]): Set<string> {
   return reused;
 }
 
-/**
- * Lines holding a token the agent already used go first (up to 400 chars each), regex fact lines fill the rest. Past use
- * predicts later use (G13, tokens used after compaction: +2.7…+3.7 pts at 50k, +0.8…+0.9 at 165k, all CIs above 0).
- */
+/** Lines holding a token the agent already used first, regex fact lines fill the rest (see `reuseFirstLines`). */
 export function reuseLines(reused: ReadonlySet<string>): LineSelector {
-  return (text, budget) => {
-    const pinned: string[] = [];
-    let used = 0;
-    for (const ln of text.split('\n')) {
-      const s = ln.slice(0, 400);
-      if (used + s.length + 1 <= budget && digitTokens(s).some((t) => reused.has(t))) {
-        pinned.push(s);
-        used += s.length + 1;
-      }
-    }
-    if (!pinned.length) return factLines(text, budget);
-    return [...pinned, ...factLines(text, budget - used).filter((x) => !pinned.some((p) => p.includes(x) || x.includes(p)))];
-  };
+  return (text, budget) => reuseFirstLines(text, budget, reused);
 }
 
 /**
