@@ -29,7 +29,11 @@ Upstream erases every call Jev scores as stale, observations of the world includ
   6000 chars, dense dumps and error heads are never cut;
 - a compaction frees what the context window needs (back to `compactAtPercent − 10` of it), result by result:
   the step that frees the most per fact lost goes first, reads give way first, and when that is not enough
-  the oldest dropped results give way instead of the whole history falling back to the built-in summary.
+  the oldest dropped results give way instead of the whole history falling back to the built-in summary;
+- the Claude Code hook saves the full output of every result it reduces to
+  `.claude/fast-jev/<session>/<tool_use_id>.txt` in the project (git-ignored) and points the note there, so what
+  a stub does not keep is one Read away; before a fallback to the summary it saves every output with an index and
+  tells the summarizer where they are (`saveFullOutputs`, default on).
 
 | six blind held-out rounds, 25 transcripts | facts kept | tokens left after compaction (current rules) |
 |---|---|---|

@@ -8,7 +8,7 @@ import type {
   TurnCompleteInput,
 } from 'claude-code';
 
-import { compact, RAIL_FLOOR, reductionRatio, resolveOptions } from '../src/compact.js';
+import { compact, fullOutputNote, RAIL_FLOOR, reductionRatio, resolveOptions } from '../src/compact.js';
 import { estimateTokens } from '../src/state.js';
 import { buildJevRequest, DEFAULT_MODEL, parseJevResponse } from '../src/request.js';
 import type {
@@ -47,6 +47,8 @@ export type HookConfig = CompactOptions & {
   compactAtPercent: number;
   minReductionRatio: number;
   model: string;
+  /** Save the full output of every reduced result under `<cwd>/.claude/fast-jev/<session>/`. Default true. */
+  saveFullOutputs: boolean;
 };
 
 function optionNumber(options: PluginOptions, key: string, fallback: number): number {
@@ -81,6 +83,7 @@ export function resolveHookConfig(options: PluginOptions): HookConfig {
       HOOK_DEFAULTS.minReductionRatio,
     ),
     model: optionString(options, 'model') ?? HOOK_DEFAULTS.model,
+    saveFullOutputs: options.saveFullOutputs !== false,
   };
   const apiKey = optionString(options, 'apiKey');
   if (apiKey) config.apiKey = apiKey;
@@ -222,6 +225,7 @@ export async function compactSession(
   config: HookConfig,
   fetchFn: HookFetch,
   minReduction?: number,
+  offload?: { dir: string; fs: OffloadFs },
 ): Promise<SessionCompaction> {
   if (!config.apiKey) throw new Error('TYPESAFE_API_KEY is not configured');
   const result = await compact(messages, jevAsker(fetchFn, config.apiKey, config.model), {
@@ -233,7 +237,90 @@ export async function compactSession(
     if (knownAnswers.size <= KNOWN_CAP) break;
     knownAnswers.delete(id);
   }
-  return { result, messages: toSessionMessages(messages, result.messages) };
+  const kept = offload ? await offloadOutputs(messages, result.messages, offload.dir, offload.fs) : result.messages;
+  return { result: { ...result, messages: kept }, messages: toSessionMessages(messages, kept) };
+}
+
+/**
+ * Before a fallback to the built-in summary: every tool output longer than 200 chars goes to `<dir>/<tool_use_id>.txt`,
+ * with an index (id, tool, brief input, size); returns the line the summarizer is given, or undefined when a write
+ * fails (the summary then goes ahead without it).
+ */
+export async function saveForSummary(messages: readonly SessionMessage[], dir: string, fs: OffloadFs): Promise<string | undefined> {
+  const uses = new Map<string, ToolUse>();
+  for (const message of messages as readonly Message[]) for (const use of message.toolUses ?? []) uses.set(use.tool_use_id, use);
+  const index: string[] = [];
+  try {
+    await fs.write(`${dir.replace(/[\\/][^\\/]+[\\/]?$/, '')}/.gitignore`, '*\n');
+    for (const message of messages as readonly Message[]) {
+      for (const result of message.toolResults ?? []) {
+        if (result.text.length < 200) continue;
+        await fs.write(`${dir}/${result.tool_use_id.replace(/[^\w.-]/g, '_')}.txt`, result.text.slice(0, OFFLOAD_MAX_CHARS));
+        const use = uses.get(result.tool_use_id);
+        index.push(`${result.tool_use_id}\t${use?.tool ?? '?'}\t${JSON.stringify(use?.input ?? {}).slice(0, 160)}\t${result.text.length} chars`);
+      }
+    }
+    if (index.length === 0) return undefined;
+    const name = `${dir}/index-${Date.now()}.txt`;
+    await fs.write(name, `${index.join('\n')}\n`);
+    return `The full outputs of this session's tool calls are saved as files under ${dir}, one per tool_use_id (index: ${name}). Keep this path in the summary so exact outputs can be read back.`;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The file writes the offload needs: `$.fs` in the hook, a fake in tests. */
+export type OffloadFs = { write: (path: string, text: string) => Promise<void> };
+
+const OFFLOAD_MAX_CHARS = 4_000_000; // $.fs.write rejects over 4 MiB
+
+/**
+ * Saves the full output of every result a compaction reduced to `<dir>/<tool_use_id>.txt` and points its note there,
+ * so no fact is gone: what the stub does not keep is one Read away. A reproducible read is not saved (a re-run gives
+ * it back). A write that fails leaves the note pointing to the transcript. `<dir>/../.gitignore` keeps the files out
+ * of git.
+ */
+export async function offloadOutputs(
+  original: readonly SessionMessage[],
+  compacted: readonly Message[],
+  dir: string,
+  fs: OffloadFs,
+): Promise<Message[]> {
+  const full = new Map<string, string>();
+  for (const message of original as readonly Message[]) {
+    for (const result of message.toolResults ?? []) full.set(result.tool_use_id, result.text);
+  }
+  const root = dir.replace(/[\\/][^\\/]+[\\/]?$/, '');
+  let ignored = false;
+  const out: Message[] = [];
+  for (const message of compacted) {
+    if (!message.toolResults?.some((result) => result.text.includes(fullOutputNote(result.tool_use_id)))) {
+      out.push(message);
+      continue;
+    }
+    const results = [];
+    for (const result of message.toolResults) {
+      const note = fullOutputNote(result.tool_use_id);
+      const text = full.get(result.tool_use_id);
+      if (!result.text.includes(note) || text === undefined) {
+        results.push(result);
+        continue;
+      }
+      const path = `${dir}/${result.tool_use_id.replace(/[^\w.-]/g, '_')}.txt`;
+      try {
+        if (!ignored) {
+          await fs.write(`${root}/.gitignore`, '*\n');
+          ignored = true;
+        }
+        await fs.write(path, text.slice(0, OFFLOAD_MAX_CHARS));
+        results.push({ ...result, text: result.text.replace(note, `the full output is saved at ${path}; Read it for anything not kept here`) });
+      } catch {
+        results.push(result);
+      }
+    }
+    out.push({ ...message, toolResults: results });
+  }
+  return out;
 }
 
 function percent(ratio: number): string {
@@ -320,11 +407,31 @@ function notify(
   $.ui.toast(text, { timeoutMs: 15_000 });
 }
 
+// ponytail: the hook context's type is not exported under a name here; only session.cwd/id and fs.write are used.
+async function offloadTarget($: {
+  session: { cwd: () => Promise<string>; id: () => Promise<string> };
+  fs: OffloadFs;
+}): Promise<{ dir: string; fs: OffloadFs } | undefined> {
+  try {
+    const [cwd, id] = await Promise.all([$.session.cwd(), $.session.id()]);
+    return { dir: `${cwd.replace(/[\\/]+$/, '')}/.claude/fast-jev/${id.replace(/[^\w.-]/g, '_')}`, fs: { write: (path: string, text: string) => $.fs.write(path, text) } };
+  } catch {
+    return undefined;
+  }
+}
+
 export const register: Register = (on: On, options: PluginOptions) => {
   const configured = resolveHookConfig(options);
   let compacting = false;
 
   on('session.compact', async ($, event, next) => {
+    // A fallback still keeps every output: saved to files, and the summarizer is told where they are.
+    const fallback = async (reason: string) => {
+      notify($, `fallback to built-in summary (${reason})`);
+      const target = configured.saveFullOutputs ? await offloadTarget($) : undefined;
+      const note = target ? await saveForSummary(event.messages, target.dir, target.fs) : undefined;
+      return next(note ? { ...event, instructions: [event.instructions, note].filter(Boolean).join('\n\n') } : event);
+    };
     try {
       const config = { ...configured, apiKey: await getApiKey($, configured) };
       const usage = await $.session.usage().then(
@@ -340,14 +447,11 @@ export const register: Register = (on: On, options: PluginOptions) => {
           return { status: response.status, ok: response.ok, text: response.text };
         },
         needed.minReduction,
+        config.saveFullOutputs ? await offloadTarget($) : undefined,
       );
       for (const line of decisionLogLines(result)) $.ui.log(line);
       if (reductionRatio(result) < needed.gate) {
-        notify(
-          $,
-          `fallback to built-in summary (below the ${percent(needed.gate)} this window needs: ${summarize(result)})`,
-        );
-        return next(event);
+        return fallback(`below the ${percent(needed.gate)} this window needs: ${summarize(result)}`);
       }
       notify(
         $,
@@ -355,11 +459,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
       );
       return { messages };
     } catch (error) {
-      notify(
-        $,
-        `fallback to built-in summary (${error instanceof Error ? error.message : String(error)})`,
-      );
-      return next(event);
+      return fallback(error instanceof Error ? error.message : String(error));
     }
   });
 

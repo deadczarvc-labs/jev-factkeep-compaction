@@ -51,7 +51,8 @@ The plugin declares these `userConfig` values in
 | `keepThreshold` | `0.5` |
 | `preserveRecentMessages` | `6` |
 | `compactAtPercent` | `60` |
-| `minReductionRatio` | `0.25` |
+| `minReductionRatio` | `0.25` (only when the window's fill is unknown) |
+| `saveFullOutputs` | `true` |
 | `maxStateTokens` | `25000` |
 | `maxRequestTokens` | `30000` |
 | `truncateHeadChars` | `300` |

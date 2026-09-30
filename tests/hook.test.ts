@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   compactSession,
   forgetAnswers,
+  offloadOutputs,
+  saveForSummary,
   pressure,
   decisionLog,
   decisionLogLines,
@@ -9,7 +11,7 @@ import {
   summarize,
   toSessionMessages,
 } from '../hooks/fast-jev.ts';
-import { applyDecisions, collectToolCalls, decideCall, type Message } from '../src/index.js';
+import { applyDecisions, collectToolCalls, decideCall, fullOutputNote, type Message } from '../src/index.js';
 
 type SessionMessage = Message & { handle?: string };
 
@@ -55,7 +57,7 @@ function jevFetch(answer: (name: string) => number, bodies: string[] = []) {
 
 describe('hook config', () => {
   it('reads userConfig values and falls back to defaults', () => {
-    expect(resolveHookConfig({})).toEqual({ compactAtPercent: 60, minReductionRatio: 0.25, model: 'jev-latest' });
+    expect(resolveHookConfig({})).toEqual({ compactAtPercent: 60, minReductionRatio: 0.25, model: 'jev-latest', saveFullOutputs: true });
     expect(
       resolveHookConfig({ apiKey: 'k', keepThreshold: 0.3, maxStateTokens: 1000, model: 'jev-x', goal: 'g', compactAtPercent: 'no' }),
     ).toEqual({
@@ -66,6 +68,7 @@ describe('hook config', () => {
       goal: 'g',
       compactAtPercent: 60,
       minReductionRatio: 0.25,
+      saveFullOutputs: true,
     });
   });
 });
@@ -198,5 +201,70 @@ describe('pressure', () => {
     // a full window needs far more; a manual /compact at low fill needs almost nothing
     expect(pressure({ tokens: 190_000, window: 200_000 }, 190_000, config).minReduction).toBeGreaterThan(0.45);
     expect(pressure({ tokens: 40_000, window: 200_000 }, 40_000, config)).toEqual({ minReduction: 0.05, gate: 0 });
+  });
+});
+
+describe('offloadOutputs', () => {
+  const full = `status=failed pid 4242\n${'trace line\n'.repeat(900)}`;
+  const original = [
+    { role: 'assistant', text: '', toolUses: [{ tool_use_id: 't1', tool: 'Bash', input: { command: 'deploy' } }] },
+    { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 't1', text: full }] },
+  ] as Message[];
+  const stub = `status=failed pid 4242\n[fast-jev-compaction omitted 9000 chars; ${fullOutputNote('t1')}]`;
+  const compacted = [original[0]!, { ...original[1]!, toolResults: [{ tool_use_id: 't1', text: stub }] }] as Message[];
+
+  it('saves the full output of a reduced result and points its note to the file', async () => {
+    const files = new Map<string, string>();
+    const out = await offloadOutputs(original as never, compacted, 'C:/p/.claude/fast-jev/s1', {
+      write: async (path, text) => void files.set(path, text),
+    });
+    expect(files.get('C:/p/.claude/fast-jev/s1/t1.txt')).toBe(full);
+    expect(files.get('C:/p/.claude/fast-jev/.gitignore')).toBe('*\n');
+    const text = out[1]!.toolResults![0]!.text;
+    expect(text).toContain('the full output is saved at C:/p/.claude/fast-jev/s1/t1.txt');
+    expect(text).not.toContain(fullOutputNote('t1'));
+  });
+
+  it('keeps the transcript note when the write fails', async () => {
+    const out = await offloadOutputs(original as never, compacted, 'C:/p/.claude/fast-jev/s1', {
+      write: async () => {
+        throw new Error('EACCES');
+      },
+    });
+    expect(out[1]!.toolResults![0]!.text).toBe(stub);
+  });
+
+  it('leaves untouched results and re-run notes alone', async () => {
+    const files = new Map<string, string>();
+    const out = await offloadOutputs(original as never, original, 'C:/p/.claude/fast-jev/s1', {
+      write: async (path, text) => void files.set(path, text),
+    });
+    expect(files.size).toBe(0);
+    expect(out[1]).toBe(original[1]);
+  });
+});
+
+describe('saveForSummary', () => {
+  it('saves every long output with an index and returns the line for the summarizer', async () => {
+    const files = new Map<string, string>();
+    const messages = [
+      { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'a1', tool: 'Bash', input: { command: 'make' } }] },
+      { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'a1', text: `error: ${'x'.repeat(300)}` }] },
+      { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'a2', tool: 'Bash', input: { command: 'true' } }] },
+      { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'a2', text: 'ok' }] },
+    ] as Message[];
+    const line = await saveForSummary(messages as never, 'C:/p/.claude/fast-jev/s1', {
+      write: async (path, text) => void files.set(path, text),
+    });
+    expect(files.has('C:/p/.claude/fast-jev/s1/a1.txt')).toBe(true);
+    expect(files.has('C:/p/.claude/fast-jev/s1/a2.txt')).toBe(false); // short output: not worth a file
+    const index = [...files.entries()].find(([path]) => /index-\d+\.txt$/.test(path));
+    expect(index?.[1]).toMatch(/^a1\tBash\t\{"command":"make"\}\t307 chars\n$/);
+    expect(line).toContain('C:/p/.claude/fast-jev/s1');
+  });
+
+  it('returns undefined when a write fails, so the summary goes ahead without the line', async () => {
+    const messages = [{ role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'a1', text: 'y'.repeat(500) }] }] as Message[];
+    expect(await saveForSummary(messages as never, 'C:/p/x/s', { write: async () => { throw new Error('EACCES'); } })).toBeUndefined();
   });
 });

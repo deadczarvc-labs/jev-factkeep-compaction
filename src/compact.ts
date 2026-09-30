@@ -235,6 +235,14 @@ export const RAIL_TIERS: readonly Rails[] = [
 ];
 export const RAIL_FLOOR = knob('FJC_RAIL_FLOOR', 0.3); // default minimum reduction; the hook passes its own
 
+/**
+ * Where a reduced result's full output is: the phrase every fact stub and last-resort note carries. The hook swaps it
+ * for the path of a file holding the full output (see `offloadOutputs` in hooks/fast-jev.ts).
+ */
+export function fullOutputNote(id: string): string {
+  return `the full output stays in this session's transcript under ${id}`;
+}
+
 /** A reduced result that keeps its head, its fact lines and its tail; an error keeps more. */
 export function factStubText(text: string, isError: boolean, headChars: number, factBudget: number, id?: string, rails: Rails = RAIL_TIERS[0]!): string {
   const headKeep = isError ? Math.max(headChars, ERROR_KEEP_CHARS) : headChars;
@@ -245,7 +253,7 @@ export function factStubText(text: string, isError: boolean, headChars: number, 
   const tailStart = tailNl === -1 || tailNl >= text.length - 1 ? text.length - TAIL_CHARS : tailNl + 1;
   if (text.length <= rails.denseKeep && factLines(text, Number.MAX_SAFE_INTEGER).reduce((n, l) => n + l.length + 1, 0) >= text.length * rails.denseShare) return text;
   const facts = factLines(text.slice(headEnd, tailStart), Math.max(factBudget, Math.floor(text.length * rails.share)));
-  const where = id ? `the full output stays in this session's transcript under ${id}` : 'the full output stays in the session transcript';
+  const where = id ? fullOutputNote(id) : 'the full output stays in the session transcript';
   return `${text.slice(0, headEnd)}\n[fast-jev-compaction omitted ${tailStart - headEnd} chars of this tool result${isError ? ' (error)' : ''}${
     facts.length ? `; kept its ${facts.length} fact line(s)` : ''
   }; ${where}]\n${facts.length ? `${facts.join('\n')}\n…\n` : ''}${text.slice(tailStart)}`;
@@ -300,8 +308,9 @@ export function reproducible(tool: string, input: Record<string, unknown>): bool
 const COMPACTED_MARK = /\[fast-jev-compaction (?:omitted|truncated) /;
 
 /** One line for a reproducible read: the call (brief) stays, its output is a note. */
-function rerunNote(text: string): string {
-  return text.length <= 160 ? text : `[fast-jev-compaction omitted ${text.length} chars: a reproducible read, re-run the tool to see it]`;
+function rerunNote(text: string, id: string): string {
+  // The note also names where the full output is: a file can change after the read, and the hook saves the output.
+  return text.length <= 160 ? text : `[fast-jev-compaction omitted ${text.length} chars: a reproducible read, re-run the tool to see it; ${fullOutputNote(id)}]`;
 }
 
 /** String fields of a stubbed call's input cut to `max` chars: the call stays readable, not verbatim. */
@@ -460,7 +469,7 @@ function rerunnableIds(messages: readonly Message[]): Set<string> {
 /** One result under one rail tier (see applyFactStubs). */
 function reducedText(id: string, text: string, isError: boolean, headChars: number, rails: Rails, rerunnable: ReadonlySet<string>): string {
   if (COMPACTED_MARK.test(text)) return text;
-  if (rerunnable.has(id) && !isError && text.length > rails.readKeep && !READ_OBSERVATION.test(text)) return rerunNote(text);
+  if (rerunnable.has(id) && !isError && text.length > rails.readKeep && !READ_OBSERVATION.test(text)) return rerunNote(text, id);
   return factStubText(text, isError, headChars, FACT_BUDGET_CHARS, id, rails);
 }
 
@@ -520,7 +529,7 @@ function lastResort(messages: Message[], decisions: readonly CallDecision[], cal
     const text = texts.get(id);
     if (text === undefined) continue;
     const notes = text.split('\n').filter((line) => COMPACTED_MARK.test(line));
-    const note = notes.length > 0 ? notes : [`[fast-jev-compaction omitted ${text.length} chars: only fact lines kept under context pressure; the full output stays in the session transcript under ${id}]`];
+    const note = notes.length > 0 ? notes : [`[fast-jev-compaction omitted ${text.length} chars: only fact lines kept under context pressure; ${fullOutputNote(id)}]`];
     const next = [...factLines(text, Math.floor(text.length * 0.25)), ...note].join('\n');
     if (next.length < text.length) set(id, next);
   }
@@ -528,7 +537,7 @@ function lastResort(messages: Message[], decisions: readonly CallDecision[], cal
     if (total <= target) break;
     const text = texts.get(id);
     if (text === undefined) continue;
-    const next = `[fast-jev-compaction omitted ${text.length} chars: evicted under context pressure, oldest first; the full output stays in the session transcript under ${id}]`;
+    const next = `[fast-jev-compaction omitted ${text.length} chars: evicted under context pressure, oldest first; ${fullOutputNote(id)}]`;
     if (next.length < text.length) set(id, next);
   }
   return messages.map((message) =>

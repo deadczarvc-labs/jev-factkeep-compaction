@@ -117,6 +117,25 @@ Blind round 6 (4 new transcripts, 56 facts preregistered with the verdict rule b
 - 56/56 at 0.8 of the window does not rule out a true share below 99% (lower bound 0.936).
 - Past one window, facts are lost to room, not to fallbacks.
 
+### Saved outputs (0.3.0-astra.11)
+
+The hook saves the full output of every result it reduces to a file and names the file in the note. A fact then is
+either in the context or one Read away. Counting both (a fallback loses the notes, so facts saved before it count as
+lost):
+
+| session length | in-sample 336: in context | + saved | blind round 6, 56: in context | + saved |
+|---|---|---|---|---|
+| 0.8 window | 335 | 336 | 56 | 56 |
+| 1 window | 326 | 336 | 55 | 56 |
+| 1.2 windows | 303 | 336 | 46 | 56 |
+| 1.5 windows | 265 | 324 (96.4%) | 37 | 56 |
+
+- The 12 in-sample facts still lost at 1.5 windows all follow the 3 fallbacks. Before a fallback the hook now saves
+  every output with an index and asks the summarizer to keep the path; the simulation cannot tell whether the
+  summary keeps it, so those facts are counted as lost.
+- Round 6 is not fully blind for this row: one of its facts (a failed `ls` inside a compound command) was lost to a
+  re-run note, and re-run notes were made to point to the saved output after that was seen.
+
 ## Hermes Agent
 
 The same rules run in the Hermes Agent context engine
