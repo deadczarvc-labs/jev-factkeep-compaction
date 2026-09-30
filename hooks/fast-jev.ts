@@ -11,6 +11,7 @@ import type {
 import { compact, reductionRatio, resolveOptions } from '../src/compact.js';
 import { buildJevRequest, DEFAULT_MODEL, parseJevResponse } from '../src/request.js';
 import type {
+  CallAnswer,
   CompactOptions,
   CompactResult,
   JevAsker,
@@ -161,6 +162,17 @@ export type SessionCompaction = {
   messages: SessionMessage[];
 };
 
+// Jev's answers by tool_use_id (globally unique), kept for the life of the hook module: a re-compaction of the same
+// session does not ask about calls it already decided. ponytail: in-memory, capped; lost on restart, which only
+// costs the requests it would have saved.
+const knownAnswers = new Map<string, CallAnswer>();
+const KNOWN_CAP = 20_000;
+
+/** Clears the remembered answers (tests; a fresh session never needs it: tool_use_ids do not repeat). */
+export function forgetAnswers(): void {
+  knownAnswers.clear();
+}
+
 /** Runs the library over a session transcript; throws when the key is missing or Jev fails. */
 export async function compactSession(
   messages: readonly SessionMessage[],
@@ -168,7 +180,11 @@ export async function compactSession(
   fetchFn: HookFetch,
 ): Promise<SessionCompaction> {
   if (!config.apiKey) throw new Error('TYPESAFE_API_KEY is not configured');
-  const result = await compact(messages, jevAsker(fetchFn, config.apiKey, config.model), config);
+  const result = await compact(messages, jevAsker(fetchFn, config.apiKey, config.model), { ...config, knownAnswers });
+  for (const id of knownAnswers.keys()) {
+    if (knownAnswers.size <= KNOWN_CAP) break;
+    knownAnswers.delete(id);
+  }
   return { result, messages: toSessionMessages(messages, result.messages) };
 }
 

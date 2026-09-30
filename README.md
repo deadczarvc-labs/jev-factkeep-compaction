@@ -78,7 +78,11 @@ built-in compaction summary with the original messages.
    window gets the fact rails without Jev, so compaction never throws for size.
    On four real overflowing sessions (28–31k) every compaction went through
    with 2 windows; where the full state fits, windows agree with it on 99.7% of
-   decisions. Tokens are estimated without a tokenizer (a
+   decisions. On a re-compaction, calls whose result is already reduced are
+   final and not asked, and the hook remembers Jev's answers by `tool_use_id`
+   for the life of the process (`knownAnswers`): asked again, Jev gave the same
+   action on 711 of 711 calls, and remembering cuts the questions of a second
+   compaction by 48% and its requests by 29%. Tokens are estimated without a tokenizer (a
    word per six letters, half a token per digit, ~one per other symbol),
    calibrated to land a little above the counts Jev reports.
 4. For every non-pinned call Jev gets two `noul` questions: should the **call**

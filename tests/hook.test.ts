@@ -1,6 +1,7 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it } from 'vitest';
 import {
   compactSession,
+  forgetAnswers,
   decisionLog,
   decisionLogLines,
   resolveHookConfig,
@@ -110,6 +111,8 @@ describe('session message mapping', () => {
 });
 
 describe('compactSession', () => {
+  beforeEach(() => forgetAnswers());
+
   it('runs the library over the engine fetch and reports the outcome', async () => {
     const bodies: string[] = [];
     const config = { ...resolveHookConfig({ preserveRecentMessages: 1 }), apiKey: 'k', model: 'jev-x' };
@@ -147,5 +150,31 @@ describe('compactSession', () => {
     await expect(
       compactSession(transcript(), { ...config, apiKey: 'k' }, async () => ({ status: 500, ok: false, text: 'x' })),
     ).rejects.toThrow(/500/);
+  });
+});
+
+describe('remembered answers', () => {
+  beforeEach(() => forgetAnswers());
+
+  it('does not ask Jev again about calls it already answered for this session', async () => {
+    const messages = [
+      { role: 'user', text: 'fix the build', toolUses: [] },
+      { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'k1', tool: 'Bash', input: { command: 'npm test' } }] },
+      { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'k1', text: 'FAIL a.test.ts\n' + 'x'.repeat(9000) }] },
+      { role: 'assistant', text: 'fixing', toolUses: [] },
+      { role: 'user', text: 'go on', toolUses: [] },
+    ] as never;
+    let requests = 0;
+    const fetchFn = (async (_url: string, init: { body: string }) => {
+      requests++;
+      const keys = Object.keys(JSON.parse(init.body).questions);
+      const text = JSON.stringify({ answers: Object.fromEntries(keys.map((k) => [k, { type: 'noul', noul: 0.1 }])) });
+      return { status: 200, ok: true, text };
+    }) as never;
+    const config = resolveHookConfig({ apiKey: 'k', preserveRecentMessages: 1 });
+    const first = await compactSession(messages, config, fetchFn);
+    const second = await compactSession(messages, config, fetchFn);
+    expect(requests).toBe(1);
+    expect(second.result.decisions.map((d) => d.action)).toEqual(first.result.decisions.map((d) => d.action));
   });
 });

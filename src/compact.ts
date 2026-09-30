@@ -293,6 +293,9 @@ export function reproducible(tool: string, input: Record<string, unknown>): bool
   });
 }
 
+/** The marker every reduced result carries (re-run notes, fact stubs, truncations). */
+const COMPACTED_MARK = /\[fast-jev-compaction (?:omitted|truncated) /;
+
 /** One line for a reproducible read: the call (brief) stays, its output is a note. */
 function rerunNote(text: string): string {
   return text.length <= 160 ? text : `[fast-jev-compaction omitted ${text.length} chars: a reproducible read, re-run the tool to see it]`;
@@ -413,10 +416,14 @@ function applyFactStubs(
   // A read's output is replaced by a re-run line only when it is long and reads like a plain read: a short output is
   // cheap and kept like any observation, and a read that timed out, failed or went to the background is an
   // observation (JEV-CMP-15 held out: 4 facts lost to re-run lines on 604-909 char outputs).
+  // Idempotent: a result an earlier compaction already reduced carries our marker and is final; reducing a fact stub
+  // again would cut the fact lines it kept.
   const reduce = (id: string, text: string, isError: boolean) =>
-    rerunnable.has(id) && !isError && text.length > rails.readKeep && !READ_OBSERVATION.test(text)
-      ? rerunNote(text)
-      : factStubText(text, isError, headChars, FACT_BUDGET_CHARS, id, rails);
+    COMPACTED_MARK.test(text)
+      ? text
+      : rerunnable.has(id) && !isError && text.length > rails.readKeep && !READ_OBSERVATION.test(text)
+        ? rerunNote(text)
+        : factStubText(text, isError, headChars, FACT_BUDGET_CHARS, id, rails);
   return messages.map((message) => {
     let changed = false;
     const toolUses = message.toolUses.map((tool) => {
@@ -555,12 +562,25 @@ export async function compact(
   const started = Date.now();
   const resolved = resolveOptions(options);
   const calls = collectToolCalls(messages, resolved.preserveRecentMessages);
-  const candidates = calls.filter((call) => !call.pinned);
+  // A call whose result an earlier compaction already reduced is final (see applyFactStubs): Jev's answer about it
+  // would change nothing, so it is not asked. On a re-compaction this skips most old calls.
+  const reduced = new Set(
+    messages.flatMap((m) => [
+      ...(m.toolResults ?? []).filter((r) => COMPACTED_MARK.test(r.text)).map((r) => r.tool_use_id),
+      ...m.toolUses.filter((t) => t.text !== undefined && COMPACTED_MARK.test(t.text)).map((t) => t.tool_use_id),
+    ]),
+  );
+  const known = options.knownAnswers;
+  const candidates = calls.filter((call) => !call.pinned && !reduced.has(call.tool_use_id) && !known?.has(call.tool_use_id));
   const charsBefore = messages.reduce((sum, message) => sum + messageChars(message), 0);
 
   let fitted: { tokens: number; stage: string } = { tokens: 0, stage: '' };
   let requests = 0;
   const answers = new Map<string, CallAnswer>();
+  for (const call of calls) {
+    const answer = known?.get(call.tool_use_id);
+    if (answer && !call.pinned) answers.set(call.id, answer);
+  }
   if (candidates.length > 0) {
     const { groups, floor, stage } = stateGroups(messages, calls, candidates, resolved);
     fitted = { tokens: Math.max(0, ...groups.map((g) => g.state.tokens)), stage };
@@ -570,10 +590,11 @@ export async function compact(
     for (const map of answered) for (const [id, answer] of map) answers.set(id, answer);
     // A call no window could fit gets the fact rails without Jev (its modal answer: drop the call, keep facts).
     for (const call of floor) answers.set(call.id, { keepCall: 0, keepResult: 0 });
+    if (known) for (const call of candidates) if (answers.has(call.id) && !floor.includes(call)) known.set(call.tool_use_id, answers.get(call.id)!);
   }
 
   const decisions = calls.map((call) =>
-    decideCall(call, answers.get(call.id) ?? { keepCall: 1, keepResult: 1 }, resolved),
+    decideCall(call, answers.get(call.id) ?? (reduced.has(call.tool_use_id) ? { keepCall: 0, keepResult: 0 } : { keepCall: 1, keepResult: 1 }), resolved),
   );
   const { messages: kept, tier: railTier } = applyWithRails(messages, decisions, calls, resolved.truncateHeadChars);
   return {
