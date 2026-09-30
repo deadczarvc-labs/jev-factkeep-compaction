@@ -194,7 +194,7 @@ export function factLines(text: string, budget: number): string[] {
 // The rails come in tiers (RAIL_TIERS): compact() uses the strictest tier whose reduction clears RAIL_FLOOR, so the
 // rails can never push a compaction under the hook's 25% fallback (which would lose every fact to a summary).
 // Offline sweep on JEV-CMP-13 ∪ 14 ∪ 15 (cmp13/replay.mts: 157 preregistered facts, recorded Jev decisions), tier 0:
-// 157/157 kept at 0.558 pooled reduction, per transcript 0.31-0.79.
+// 157/157 kept at 0.558 pooled reduction; after JEV-CMP-16 (reads up to 3000 kept) 211/211 at 0.578, per transcript 0.31-0.77.
 export interface Rails {
   small: number; // an observation up to this many chars is never cut
   share: number; // fact-line budget as a share of the result
@@ -206,8 +206,8 @@ export interface Rails {
 // where globalThis.process may not exist. It moves tier 0 only.
 const knob = (name: string, fallback: number) => Number((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.[name] ?? fallback);
 export const RAIL_TIERS: readonly Rails[] = [
-  { small: knob('FJC_SMALL_KEEP', 6_000), share: knob('FJC_FACT_SHARE', 0.3), readKeep: knob('FJC_READ_KEEP', 1_000), denseKeep: knob('FJC_DENSE_KEEP', 20_000), denseShare: knob('FJC_DENSE_SHARE', 0.5) },
-  { small: 3_000, share: 0.2, readKeep: 1_000, denseKeep: 0, denseShare: 1 },
+  { small: knob('FJC_SMALL_KEEP', 6_000), share: knob('FJC_FACT_SHARE', 0.3), readKeep: knob('FJC_READ_KEEP', 3_000), denseKeep: knob('FJC_DENSE_KEEP', 20_000), denseShare: knob('FJC_DENSE_SHARE', 0.5) },
+  { small: 3_000, share: 0.2, readKeep: 1_500, denseKeep: 0, denseShare: 1 },
   { small: 0, share: 0.1, readKeep: 0, denseKeep: 0, denseShare: 1 },
 ];
 export const RAIL_FLOOR = 0.3; // clears the hook's 25% minimum with a margin

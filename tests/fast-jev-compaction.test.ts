@@ -500,7 +500,7 @@ describe('fork: the upstream goal, drop what a re-run gives back', () => {
   });
 
   it('shrinks a dropped reproducible read to one line but keeps an observation as a fact stub', () => {
-    const big = `${'x'.repeat(1_000)}\nGET https://a.example/.well-known/oauth HTTP 404\n${'x'.repeat(1_000)}`;
+    const big = `${'x'.repeat(3_500)}\nGET https://a.example/.well-known/oauth HTTP 404\n${'x'.repeat(3_500)}`; // > readKeep and small
     const messages: Message[] = [
       { role: 'user', text: 'audit', toolUses: [] },
       { role: 'assistant', text: '', toolUses: [{ tool_use_id: 'r1', tool: 'Read', input: { file_path: 'src/a.ts' } }] },
