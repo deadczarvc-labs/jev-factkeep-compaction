@@ -20,7 +20,7 @@ export const DEFAULT_OPTIONS: ResolvedCompactOptions = {
   preserveRecentMessages: 6,
   maxStateTokens: 25_000,
   maxRequestTokens: 30_000,
-  truncateHeadChars: 300,
+  truncateHeadChars: 200,
 };
 
 /** Tokens the request envelope (`model`, key names) adds around state and questions. */
@@ -140,6 +140,70 @@ function truncatedResultText(text: string, isError: boolean, headChars: number):
   }; re-run the tool if needed]`;
 }
 
+// Fork (astra-hub, 2026-09-30): the upstream rules lost 10 of 10 content facts on a real transcript
+// (session-tracks/jev-tails-20260929/compaction-compare.md). Facts sit in the lines a later step quotes:
+// errors, paths, versions, ids, endpoints, HTTP codes, counts. A reduced result keeps them.
+const FACT_PATTERNS: readonly RegExp[] = [
+  /\b(error|errors|failed|failure|fail|exception|traceback|denied|refused|invalid|not found|timed? ?out|fatal|panic|warning)\b|invalid_\w+/i,
+  /✖|✗|\bFAIL\b|\bERR\b/,
+  /\bHTTP\b[\s/\d.]*\d{3}\b|\bstatus[\s:=]+\d{3}\b/i,
+  /[A-Za-z]:[\\/][^\s"'<>]+|(?:^|[\s"'(=])\/(?:[\w.@-]+\/)+[\w.@-]+/,
+  /\b\d+\.\d+\.\d+\b/,
+  /\b[0-9a-f]{7,40}\b/,
+  /\b(?:\d{1,3}\.){3}\d{1,3}(?::\d+)?\b|\blocalhost:\d+\b/,
+  /\b(pid|port|exit|rc|code|size|bytes|pass(?:ed)?|fail(?:ed)?|tests?|total|count)\b[\s:=]*\d/i,
+  /\b\d[\d,.]*\s?(ms|kb|mb|gb|bytes|%|tokens|lines?|files?)\b/i,
+  /\b\d{4,}\b/, // sizes, pids, ids: `ls -l` and process tables carry them bare
+  /\b[\w.-]+\.(?:[cm]?[jt]sx?|py|json|ya?ml|md|toml|txt|log|rs|go|sh|ps1|cmd|lock|sql)\b/i,
+];
+const FACT_LINE_CHARS = 200;
+const TAIL_CHARS = 120;
+const ERROR_KEEP_CHARS = 2_000;
+
+/** Lines of `text` that carry facts, most fact-dense first until `budget` chars, returned in text order. */
+export function factLines(text: string, budget: number): string[] {
+  const scored = text
+    .split(/\r?\n/)
+    .map((line, index) => ({ line: line.trim().slice(0, FACT_LINE_CHARS), index }))
+    .filter(({ line }) => line.length > 0)
+    .map((entry) => ({ ...entry, score: FACT_PATTERNS.filter((re) => re.test(entry.line)).length }))
+    .filter(({ score }) => score > 0)
+    .sort((a, b) => b.score - a.score || a.index - b.index);
+  const picked: typeof scored = [];
+  const seen = new Set<string>();
+  let used = 0;
+  for (const entry of scored) {
+    if (seen.has(entry.line) || used + entry.line.length + 1 > budget) continue;
+    seen.add(entry.line);
+    picked.push(entry);
+    used += entry.line.length + 1;
+  }
+  return picked.sort((a, b) => a.index - b.index).map(({ line }) => line);
+}
+
+/** A reduced result that keeps its head, its fact lines and its tail; an error keeps more. */
+export function factStubText(text: string, isError: boolean, headChars: number, factBudget: number): string {
+  const headKeep = isError ? Math.max(headChars, ERROR_KEEP_CHARS) : headChars;
+  if (text.length <= headKeep + TAIL_CHARS + 120) return text;
+  const head = text.slice(0, headKeep);
+  const tail = text.slice(-TAIL_CHARS);
+  const facts = factLines(text.slice(headKeep, -TAIL_CHARS), factBudget);
+  const omitted = text.length - headKeep - TAIL_CHARS;
+  return `${head}\n[fast-jev-compaction omitted ${omitted} chars of this tool result${isError ? ' (error)' : ''}${
+    facts.length ? `; kept its ${facts.length} fact line(s)` : ''
+  }; re-run the tool if needed]\n${facts.length ? `${facts.join('\n')}\n…\n` : ''}${tail}`;
+}
+
+/** String fields of a stubbed call's input cut to `max` chars: the call stays readable, not verbatim. */
+export function briefInput(input: unknown, max: number): unknown {
+  if (typeof input === 'string') return input.length > max ? `${input.slice(0, max)}…[${input.length - max} chars]` : input;
+  if (Array.isArray(input)) return input.map((item) => briefInput(item, max));
+  if (input && typeof input === 'object') {
+    return Object.fromEntries(Object.entries(input as Record<string, unknown>).map(([k, v]) => [k, briefInput(v, max)]));
+  }
+  return input;
+}
+
 /**
  * Rebuilds the conversation from the decisions. A dropped call disappears
  * together with its result; a dropped result keeps a bounded head and note.
@@ -151,6 +215,7 @@ export function applyDecisions(
   decisions: readonly CallDecision[],
   calls: readonly ToolCall[],
   headChars: number,
+  keepFacts = true,
 ): Message[] {
   const byId = new Map(calls.map((call) => [call.id, call]));
   const actions = new Map<string, CallDecision['action']>();
@@ -158,6 +223,8 @@ export function applyDecisions(
     const call = byId.get(decision.id);
     if (call && decision.action !== 'keep') actions.set(call.tool_use_id, decision.action);
   }
+  // Fork: a call Jev no longer needs is reduced to a fact stub (brief input, fact lines), never erased.
+  if (keepFacts) return applyFactStubs(messages, actions, headChars);
   const kept: Message[] = [];
   for (const message of messages) {
     const touched =
@@ -222,6 +289,42 @@ export function applyDecisions(
     kept.push(rebuilt);
   }
   return kept;
+}
+
+const FACT_BUDGET_CHARS = 360;
+const INPUT_BRIEF_CHARS = 200;
+
+function applyFactStubs(
+  messages: readonly Message[],
+  actions: ReadonlyMap<string, CallDecision['action']>,
+  headChars: number,
+): Message[] {
+  return messages.map((message) => {
+    let changed = false;
+    const toolUses = message.toolUses.map((tool) => {
+      const action = actions.get(tool.tool_use_id);
+      if (!action || action === 'keep') return tool;
+      const input = action === "drop_call" ? (briefInput(tool.input, INPUT_BRIEF_CHARS) as Record<string, unknown>) : tool.input;
+      const text = tool.text === undefined ? undefined : factStubText(tool.text, tool.isError ?? false, headChars, FACT_BUDGET_CHARS);
+      if (text === tool.text && JSON.stringify(input) === JSON.stringify(tool.input)) return tool;
+      changed = true;
+      const copy: ToolUse = { tool_use_id: tool.tool_use_id, tool: tool.tool, input };
+      if (text !== undefined) copy.text = text;
+      if (tool.isError) copy.isError = true;
+      return copy;
+    });
+    const toolResults = (message.toolResults ?? []).map((result) => {
+      if (!actions.has(result.tool_use_id)) return result;
+      const text = factStubText(result.text, result.isError ?? false, headChars, FACT_BUDGET_CHARS);
+      if (text === result.text) return result;
+      changed = true;
+      return { tool_use_id: result.tool_use_id, text, isError: result.isError };
+    });
+    if (!changed) return message;
+    const rebuilt: Message = { role: message.role, text: message.text, toolUses };
+    if (toolResults.length > 0) rebuilt.toolResults = toolResults;
+    return rebuilt;
+  });
 }
 
 /** Characters of text, tool input and tool output a message holds. */

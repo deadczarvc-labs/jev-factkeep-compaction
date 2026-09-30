@@ -1,7 +1,7 @@
 {
   "name": "fast-jev-compaction",
-  "version": "0.3.0",
-  "description": "Verbatim Jev-guided compaction for Claude Code sessions.",
+  "version": "0.3.0-astra.1",
+  "description": "Verbatim Jev-guided compaction for Claude Code sessions (astra-hub fork: dropped calls become fact stubs, never erased).",
   "license": "MIT",
   "userConfig": {
     "apiKey": {
@@ -49,8 +49,8 @@
     "truncateHeadChars": {
       "type": "number",
       "title": "Truncated tool result head",
-      "description": "Characters of a tool result kept when Jev decides its full output is no longer needed; 0 keeps only the note.",
-      "default": 300
+      "description": "Characters of a tool result head kept when Jev decides its full output is no longer needed; the fork also keeps the fact lines and a short tail.",
+      "default": 200
     },
     "model": {
       "type": "string",

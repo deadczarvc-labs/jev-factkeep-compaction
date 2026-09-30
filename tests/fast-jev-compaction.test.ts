@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   applyDecisions,
   batchCalls,
+  briefInput,
+  factStubText,
   buildJevRequest,
   collectToolCalls,
   compact,
@@ -78,7 +80,7 @@ describe('options', () => {
       preserveRecentMessages: 6,
       maxStateTokens: 25_000,
       maxRequestTokens: 30_000,
-      truncateHeadChars: 300,
+      truncateHeadChars: 200, // fork: head 200 + fact lines + tail (compaction-compare.md sweep)
     });
     expect(resolveOptions({
       keepThreshold: Number.NaN,
@@ -279,7 +281,7 @@ describe('decisions', () => {
       decideCall(calls[1]!, { keepCall: 0.9, keepResult: 0.1 }, options),
       decideCall(calls[2]!, { keepCall: 0.9, keepResult: 0.9 }, options),
     ];
-    const kept = applyDecisions(messages, decisions, calls, 300);
+    const kept = applyDecisions(messages, decisions, calls, 300, false);
 
     expect(kept.map((m) => m.text || m.toolUses[0]?.tool_use_id || m.toolResults?.[0]?.tool_use_id)).toEqual([
       'Never edit anything under src/generated. Fix the failing test.',
@@ -307,7 +309,7 @@ describe('decisions', () => {
     const shortMessages = transcript();
     shortMessages[4]!.toolUses[0]!.text = 'y'.repeat(100);
     shortMessages[5]!.toolResults![0]!.text = 'y'.repeat(100);
-    const shortKept = applyDecisions(shortMessages, decisions, calls, 300);
+    const shortKept = applyDecisions(shortMessages, decisions, calls, 300, false);
     expect(shortKept[2]).toBe(shortMessages[4]);
     expect(shortKept[3]).toBe(shortMessages[5]);
   });
@@ -319,13 +321,13 @@ describe('decisions', () => {
     const original = messages[2]!.toolResults![0]!.text;
     const total = original.length;
 
-    const kept = applyDecisions(messages, decisions, calls, 50);
+    const kept = applyDecisions(messages, decisions, calls, 50, false);
     expect(kept[2]?.toolResults?.[0]?.text).toBe(
       `${original.slice(0, 50)}\n[fast-jev-compaction truncated ${total - 50} chars of this tool result; re-run the tool if needed]`,
     );
     expect(kept[1]?.toolUses[0]?.text).toBe(kept[2]?.toolResults?.[0]?.text);
 
-    const noHead = applyDecisions(messages, decisions, calls, 0);
+    const noHead = applyDecisions(messages, decisions, calls, 0, false);
     expect(noHead[2]?.toolResults?.[0]?.text).toBe(
       `[fast-jev-compaction truncated ${total} chars of this tool result; re-run the tool if needed]`,
     );
@@ -429,5 +431,43 @@ describe('HTTP client', () => {
     await expect(
       compactMessages(transcript(), { apiKey: '', preserveRecentMessages: 1 }),
     ).rejects.toThrow(/TYPESAFE_API_KEY/);
+  });
+});
+
+describe('fork: fact stubs', () => {
+  it('keeps error, path, version, id, endpoint and count lines of an omitted middle', () => {
+    const middle = [
+      'plain filler line without anything',
+      '-rw-r--r-- 1 user user 179655 Sep 29 03:59 agents-index.ts',
+      'GET https://mcp.unframer.co/.well-known/oauth-authorization-server HTTP 404',
+      '@codex-codegraph | live | node.exe | pid 43748',
+      'figma-desktop err=Failed to connect to 127.0.0.1:3845',
+      'node_modules/partyserver 0.4.1',
+      '27b19d7f3962fec8 *agents-index.ts',
+    ].join('\n');
+    const text = `${'h'.repeat(300)}\n${'filler\n'.repeat(200)}${middle}\n${'filler\n'.repeat(200)}${'t'.repeat(200)}`;
+    const stub = factStubText(text, false, 300, 600);
+    for (const fact of ['179655', 'oauth-authorization-server HTTP 404', 'pid 43748', '127.0.0.1:3845', 'partyserver 0.4.1', '27b19d7f3962fec8']) {
+      expect(stub).toContain(fact);
+    }
+    expect(stub).not.toContain('plain filler line');
+    expect(stub.startsWith('h'.repeat(300))).toBe(true);
+    expect(stub.endsWith('t'.repeat(120))).toBe(true);
+    expect(stub.length).toBeLessThan(text.length / 2);
+  });
+
+  it('keeps short results whole, errors longer, and a dropped call as a brief stub instead of erasing it', () => {
+    expect(factStubText('short', false, 300, 600)).toBe('short');
+    const error = `Traceback\n${'e'.repeat(1_900)}`;
+    expect(factStubText(error, true, 300, 600)).toBe(error);
+    const messages = transcript();
+    messages[5]!.toolResults![0]!.text = `${'x'.repeat(2_000)}\nFAIL b.test.ts expected 2 to be 3\n${'x'.repeat(2_000)}`;
+    const calls = collectToolCalls(messages, 0);
+    const decisions = calls.map((call) => decideCall(call, { keepCall: 0.1, keepResult: 0.1 }, { keepThreshold: 0.5 }));
+    const kept = applyDecisions(messages, decisions, calls, 300);
+    expect(kept).toHaveLength(messages.length);
+    expect(kept[5]?.toolResults?.[0]?.text).toContain('FAIL b.test.ts expected 2 to be 3');
+    expect(kept[0]).toBe(messages[0]);
+    expect(briefInput({ command: 'a'.repeat(500), n: 1 }, 300)).toEqual({ command: `${'a'.repeat(300)}…[200 chars]`, n: 1 });
   });
 });

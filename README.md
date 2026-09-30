@@ -1,5 +1,12 @@
 # fast-jev-compaction
 
+> **astra-hub fork (`astra-facts`, 0.3.0-astra.1).** Upstream lost facts: on a real 22-call transcript, 0 of 10
+> content facts survived through the engine itself. The ones that "survived" had been restated by the agent.
+> The fork never erases a call. A call or result that Jev drops is reduced to a fact stub: a brief input, a
+> 200-char head, the lines carrying errors, paths, versions, ids, endpoints, HTTP codes and counts (up to 360
+> chars), and a 120-char tail. Error results keep 2000 chars. Same transcript: facts 12/12, all kept by the
+> engine itself (upstream 2/12). Token reduction is 40% instead of 66%. The rest of the file describes upstream.
+
 Claude Code plugin that replaces the compaction summary with Jev decisions:
 every tool call and result is scored in one fast request, stale ones are
 dropped or truncated, everything kept stays verbatim. Also usable as an npm
