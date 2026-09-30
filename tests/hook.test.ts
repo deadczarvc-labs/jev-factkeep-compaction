@@ -3,6 +3,7 @@ import {
   compactSession,
   forgetAnswers,
   offloadOutputs,
+  expireOutputs,
   saveForSummary,
   pressure,
   decisionLog,
@@ -266,5 +267,52 @@ describe('saveForSummary', () => {
   it('returns undefined when a write fails, so the summary goes ahead without the line', async () => {
     const messages = [{ role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 'a1', text: 'y'.repeat(500) }] }] as Message[];
     expect(await saveForSummary(messages as never, 'C:/p/x/s', { write: async () => { throw new Error('EACCES'); } })).toBeUndefined();
+  });
+});
+
+describe('saved outputs: secrets, age and paths', () => {
+  const key = `sk-${'proj'}-${'aB3dE6gH9jK2mN5pQ8sT'.repeat(2)}`;
+
+  it('masks secret values in the saved copy, not in the context note', async () => {
+    const files = new Map<string, string>();
+    const original = [
+      { role: 'assistant', text: '', toolUses: [{ tool_use_id: 't1', tool: 'Bash', input: { command: 'env' } }] },
+      { role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: 't1', text: `OPENAI_API_KEY=${key}\n${'line\n'.repeat(2000)}` }] },
+    ] as Message[];
+    const compacted = [original[0]!, { ...original[1]!, toolResults: [{ tool_use_id: 't1', text: `[fast-jev-compaction omitted; ${fullOutputNote('t1')}]` }] }] as Message[];
+    await offloadOutputs(original as never, compacted, 'C:/p/.claude/fast-jev/cache/s1', { write: async (path, text) => void files.set(path, text) });
+    const saved = files.get('C:/p/.claude/fast-jev/cache/s1/t1.txt')!;
+    expect(saved).not.toContain(key);
+    expect(saved).toContain('OPENAI_API_KEY=[REDACTED:sk-proj]');
+  });
+
+  it('keeps a hostile tool_use_id inside the session folder', async () => {
+    const files = new Map<string, string>();
+    const id = '../../../evil';
+    const original = [{ role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: id, text: 'x'.repeat(9000) }] }] as Message[];
+    const compacted = [{ role: 'user', text: '', toolUses: [], toolResults: [{ tool_use_id: id, text: `[stub; ${fullOutputNote(id)}]` }] }] as Message[];
+    await offloadOutputs(original as never, compacted, 'C:/p/.claude/fast-jev/cache/s1', { write: async (path, text) => void files.set(path, text) });
+    const written = [...files.keys()].filter((path) => path.endsWith('.txt'));
+    expect(written).toEqual(['C:/p/.claude/fast-jev/cache/s1/.._.._.._evil.txt']);
+  });
+
+  it('empties saved outputs older than 30 days and leaves fresh ones', async () => {
+    const now = Date.UTC(2026, 9, 30);
+    const day = 24 * 60 * 60 * 1000;
+    const files = new Map<string, { text: string; mtimeMs: number }>([
+      ['R/s-old/a.txt', { text: 'old output', mtimeMs: now - 31 * day }],
+      ['R/s-new/b.txt', { text: 'new output', mtimeMs: now - day }],
+    ]);
+    const fs = {
+      write: async (path: string, text: string) => void files.set(path, { text, mtimeMs: now }),
+      list: async (path: string) =>
+        path === 'R'
+          ? [{ name: 's-old', kind: 'dir', size: 0 }, { name: 's-new', kind: 'dir', size: 0 }]
+          : [...files.entries()].filter(([p]) => p.startsWith(`${path}/`)).map(([p, f]) => ({ name: p.slice(path.length + 1), kind: 'file', size: f.text.length })),
+      stat: async (path: string) => ({ mtimeMs: files.get(path)!.mtimeMs }),
+    };
+    expect(await expireOutputs('R', fs, now)).toBe(1);
+    expect(files.get('R/s-old/a.txt')!.text).toBe('');
+    expect(files.get('R/s-new/b.txt')!.text).toBe('new output');
   });
 });

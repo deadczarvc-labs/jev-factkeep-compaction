@@ -1,6 +1,6 @@
 {
   "name": "fast-jev-compaction",
-  "version": "0.3.0-astra.11",
+  "version": "0.3.0-astra.12",
   "description": "Verbatim Jev-guided compaction for Claude Code sessions (fact-keeping fork: dropped calls keep their facts, never erased).",
   "license": "MIT",
   "userConfig": {
@@ -61,7 +61,7 @@
     "saveFullOutputs": {
       "type": "boolean",
       "title": "Save full outputs",
-      "description": "Save the full output of every tool result a compaction reduces under .claude/fast-jev/<session>/ in the project (git-ignored), and point its note there.",
+      "description": "Save the full output of every tool result a compaction reduces, secret values masked, under .claude/fast-jev/cache/<session>/ in the project (git-ignored, kept 30 days), and point its note there.",
       "default": true
     }
   }

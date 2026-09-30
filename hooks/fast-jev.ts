@@ -9,6 +9,7 @@ import type {
 } from 'claude-code';
 
 import { compact, fullOutputNote, RAIL_FLOOR, reductionRatio, resolveOptions } from '../src/compact.js';
+import { redactSecrets } from '../src/secrets.js';
 import { estimateTokens } from '../src/state.js';
 import { buildJevRequest, DEFAULT_MODEL, parseJevResponse } from '../src/request.js';
 import type {
@@ -255,7 +256,7 @@ export async function saveForSummary(messages: readonly SessionMessage[], dir: s
     for (const message of messages as readonly Message[]) {
       for (const result of message.toolResults ?? []) {
         if (result.text.length < 200) continue;
-        await fs.write(`${dir}/${result.tool_use_id.replace(/[^\w.-]/g, '_')}.txt`, result.text.slice(0, OFFLOAD_MAX_CHARS));
+        await fs.write(`${dir}/${result.tool_use_id.replace(/[^\w.-]/g, '_')}.txt`, redactSecrets(result.text).slice(0, OFFLOAD_MAX_CHARS));
         const use = uses.get(result.tool_use_id);
         index.push(`${result.tool_use_id}\t${use?.tool ?? '?'}\t${JSON.stringify(use?.input ?? {}).slice(0, 160)}\t${result.text.length} chars`);
       }
@@ -270,7 +271,39 @@ export async function saveForSummary(messages: readonly SessionMessage[], dir: s
 }
 
 /** The file writes the offload needs: `$.fs` in the hook, a fake in tests. */
-export type OffloadFs = { write: (path: string, text: string) => Promise<void> };
+export type OffloadFs = {
+  write: (path: string, text: string) => Promise<void>;
+  list?: (path: string) => Promise<ReadonlyArray<{ name: string; kind: string; size: number }>>;
+  stat?: (path: string) => Promise<{ mtimeMs: number }>;
+};
+
+/** Saved outputs live as long as Claude Code keeps a transcript by default. */
+export const OUTPUT_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
+/**
+ * Empties saved outputs older than `maxAgeMs` under `root` (`<cwd>/.claude/fast-jev/cache`). `$.fs` cannot delete, so
+ * an expired file is overwritten with nothing; its name (a tool_use_id) stays. Returns how many were emptied.
+ */
+export async function expireOutputs(root: string, fs: OffloadFs, now: number, maxAgeMs = OUTPUT_MAX_AGE_MS): Promise<number> {
+  if (!fs.list || !fs.stat) return 0;
+  let emptied = 0;
+  try {
+    for (const session of await fs.list(root)) {
+      if (session.kind !== 'dir') continue;
+      for (const file of await fs.list(`${root}/${session.name}`)) {
+        if (file.kind !== 'file' || file.size === 0 || !file.name.endsWith('.txt')) continue;
+        const path = `${root}/${session.name}/${file.name}`;
+        if (now - (await fs.stat(path)).mtimeMs > maxAgeMs) {
+          await fs.write(path, '');
+          emptied++;
+        }
+      }
+    }
+  } catch {
+    // a missing root or a refused read: nothing to expire this time
+  }
+  return emptied;
+}
 
 const OFFLOAD_MAX_CHARS = 4_000_000; // $.fs.write rejects over 4 MiB
 
@@ -312,7 +345,7 @@ export async function offloadOutputs(
           await fs.write(`${root}/.gitignore`, '*\n');
           ignored = true;
         }
-        await fs.write(path, text.slice(0, OFFLOAD_MAX_CHARS));
+        await fs.write(path, redactSecrets(text).slice(0, OFFLOAD_MAX_CHARS));
         results.push({ ...result, text: result.text.replace(note, `the full output is saved at ${path}; Read it for anything not kept here`) });
       } catch {
         results.push(result);
@@ -408,13 +441,31 @@ function notify(
 }
 
 // ponytail: the hook context's type is not exported under a name here; only session.cwd/id and fs.write are used.
+// Under `cache/`: the station's restic backup (`**/cache`) and indexers skip it, while `~/.claude` itself is backed up
+// offsite. Transcripts (`*.jsonl`) are kept out of that backup on purpose; their saved outputs must be too.
+let lastExpiry = 0;
+
 async function offloadTarget($: {
   session: { cwd: () => Promise<string>; id: () => Promise<string> };
-  fs: OffloadFs;
+  fs: {
+    write: (path: string, text: string) => Promise<void>;
+    list: (path?: string) => Promise<ReadonlyArray<{ name: string; kind: string; size: number }>>;
+    stat: (path: string) => Promise<{ mtimeMs: number }>;
+  };
 }): Promise<{ dir: string; fs: OffloadFs } | undefined> {
   try {
     const [cwd, id] = await Promise.all([$.session.cwd(), $.session.id()]);
-    return { dir: `${cwd.replace(/[\\/]+$/, '')}/.claude/fast-jev/${id.replace(/[^\w.-]/g, '_')}`, fs: { write: (path: string, text: string) => $.fs.write(path, text) } };
+    const root = `${cwd.replace(/[\\/]+$/, '')}/.claude/fast-jev/cache`;
+    const fs: OffloadFs = {
+      write: (path: string, text: string) => $.fs.write(path, text),
+      list: (path: string) => $.fs.list(path),
+      stat: (path: string) => $.fs.stat(path),
+    };
+    if (Date.now() - lastExpiry > 24 * 60 * 60 * 1000) {
+      lastExpiry = Date.now();
+      await expireOutputs(root, fs, Date.now());
+    }
+    return { dir: `${root}/${id.replace(/[^\w.-]/g, '_')}`, fs };
   } catch {
     return undefined;
   }
