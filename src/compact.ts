@@ -155,6 +155,8 @@ const FACT_PATTERNS: readonly RegExp[] = [
   /\b\d[\d,.]*\s?(ms|kb|mb|gb|bytes|%|tokens|lines?|files?)\b/i,
   /\b\d{4,}\b/, // sizes, pids, ids: `ls -l` and process tables carry them bare
   /\b[\w.-]+\.(?:[cm]?[jt]sx?|py|json|ya?ml|md|toml|txt|log|rs|go|sh|ps1|cmd|lock|sql)\b/i,
+  // receipts of non-idempotent calls (ported from Hermes jev-context-engine): a re-run would send or create again
+  /\b(?:message_id|ticket|confirm(?:ed)?|sent|delivered|created|updated|deleted|order|transaction|commit)\b[\s:=#]+[\w-]+/i,
 ];
 const FACT_LINE_CHARS = 200;
 const TAIL_CHARS = 120;

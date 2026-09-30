@@ -514,3 +514,10 @@ describe('fork: the upstream goal, drop what a re-run gives back', () => {
     expect(kept[4]?.toolResults?.[0]?.text).toContain('HTTP 404');
   });
 });
+
+describe('fork: receipts survive (parity with Hermes jev-context-engine)', () => {
+  it('keeps a receipt line of a non-idempotent call deep in an omitted middle', () => {
+    const text = `${'y'.repeat(1_500)}\nmessage_id: 8f3e2a-ticket sent to 3 recipients\n${'y'.repeat(1_500)}`;
+    expect(factStubText(text, false, 200, 360)).toContain('message_id: 8f3e2a-ticket sent');
+  });
+});
