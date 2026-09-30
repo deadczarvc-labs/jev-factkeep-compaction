@@ -1,4 +1,4 @@
-import { factLines, reproducible } from './compact.js';
+import { factLines, factStubText, fullOutputNote, RAIL_TIERS, reproducible } from './compact.js';
 
 /**
  * Codex adapter. Codex compacts a chat into the user messages plus an opaque (server-encrypted) summary: every tool
@@ -171,14 +171,25 @@ export function psReads(command: string): string {
 }
 const ERROR_MARK = /\b(?:error|failed|failure|exception|traceback|denied|not found|timed? ?out)\b/i;
 
+/**
+ * Detail tiers of a digest entry, as the Claude Code hook's rails: 0 = as the fork's tier-0 rails keep it (a short
+ * observation or read whole, a long one as head + fact lines + tail), 1 = fact lines only, 2 = one line naming the call
+ * and where its full output is.
+ */
+export type Tier = 0 | 1 | 2;
+
 /** One call as digest lines: short output whole, a reproducible read as a re-run line, an observation as its facts. */
-export function callEntry(call: CodexCall, savedAt?: string): string {
+export function callEntry(call: CodexCall, savedAt?: string, tier: Tier = 1): string {
   const head = `- ${call.id} \`${brief(call.command, 160)}\`${call.error ? ' (error)' : ''}`;
   const where = savedAt ? `full output: ${savedAt}` : 'full output: in the session rollout';
   if (call.output.length <= SMALL_OUTPUT) return call.output ? `${head}\n${indent(call.output)}` : `${head} (no output)`;
-  if (!call.error && call.tool === 'Bash' && reproducible('Bash', { command: psReads(call.command), original: call.command })) {
-    return `${head} — a read (${call.output.length} chars), re-run to see it; ${where}`;
+  if (tier === 2) return `${head} — ${call.output.length} chars; ${where}`;
+  const read = !call.error && call.tool === 'Bash' && reproducible('Bash', { command: psReads(call.command), original: call.command });
+  if (tier === 0 && (!read || call.output.length <= RAIL_TIERS[0]!.readKeep)) {
+    const stub = factStubText(call.output, call.error, 1_000, 1_200, call.id, RAIL_TIERS[0]).replace(fullOutputNote(call.id), where);
+    return `${head}${stub === call.output ? '' : ` — ${where}`}\n${indent(stub)}`;
   }
+  if (read) return `${head} — a read (${call.output.length} chars), re-run to see it; ${where}`;
   const error = call.error || ERROR_MARK.test(call.output.slice(-600));
   const budget = Math.min(error ? 2400 : 1200, Math.max(300, Math.floor(call.output.length * 0.1)));
   const facts = factLines(call.output, budget);
@@ -197,22 +208,49 @@ export interface Digest {
   total: number;
 }
 
-/** The fact sheet for the calls; `savedAt(id)` names a call's saved full output, if any. */
+/**
+ * The fact sheet for the calls; `savedAt(id)` names a call's saved full output, if any. Fill order within the budget,
+ * each pass newest first: fact lines (tier 1) until one no longer fits; tier 0 for those; one line (tier 2) for the older
+ * calls while room is left. A one-line entry carries no fact, so it only takes what the facts leave.
+ */
 export function buildDigest(calls: readonly CodexCall[], budgetChars: number, savedAt: (id: string) => string | undefined, sheetPath?: string): Digest {
-  const entries = calls.map((call) => callEntry(call, savedAt(call.id)));
-  const picked: number[] = [];
+  const cache = new Map<string, string>();
+  const entry = (i: number, tier: Tier) => {
+    const key = `${i}:${tier}`;
+    if (!cache.has(key)) cache.set(key, callEntry(calls[i]!, savedAt(calls[i]!.id), tier));
+    return cache.get(key)!;
+  };
+  const budget = budgetChars - 600; // the header
+  const tiers = new Map<number, Tier>();
   let used = 0;
-  for (let i = entries.length - 1; i >= 0; i--) {
-    if (picked.length && used + entries[i]!.length + 1 > budgetChars) break; // the newest call is always listed
-    picked.unshift(i);
-    used += entries[i]!.length + 1;
+  let i = calls.length - 1;
+  for (; i >= 0; i--) {
+    const size = entry(i, 1).length + 1;
+    if (tiers.size && used + size > budget) break; // the newest call is always listed
+    tiers.set(i, 1);
+    used += size;
   }
-  const older = entries.length - picked.length;
+  for (const j of [...tiers.keys()]) {
+    const delta = entry(j, 0).length - entry(j, 1).length;
+    if (used + delta <= budget) {
+      tiers.set(j, 0);
+      used += delta;
+    }
+  }
+  for (; i >= 0; i--) {
+    const size = entry(i, 2).length + 1;
+    if (used + size > budget) break;
+    tiers.set(i, 2);
+    used += size;
+  }
+  const picked = [...tiers.keys()].sort((a, b) => a - b);
+  const entries = calls.map((_, k) => entry(k, 1));
+  const older = calls.length - picked.length;
   const header = [
-    'fast-jev-compaction (Codex): the chat was just compacted, so tool outputs left the context. Facts from them follow,',
-    'newest calls within the budget, in call order. "re-run" marks a read you can repeat; an observation keeps its fact',
-    'lines; every long output is saved in full (secret values masked). Read the file before relying on a detail not shown.',
+    'fast-jev-compaction (Codex): the chat was just compacted, so tool outputs left the context. They follow in call order,',
+    'the newest in full or as fact lines, older ones as one line. "re-run" marks a read you can repeat; every long output',
+    'is saved in full (secret values masked): read the file before relying on a detail not shown here.',
     older ? `${older} older call(s) are not listed here${sheetPath ? `; all ${entries.length}: ${sheetPath}` : ''}.` : '',
   ].filter(Boolean).join('\n');
-  return { text: `${header}\n${picked.map((i) => entries[i]).join('\n')}`, full: `${header.split('\n').slice(0, 3).join('\n')}\n${entries.join('\n')}\n`, listed: picked.length, total: entries.length };
+  return { text: `${header}\n${picked.map((i) => entry(i, tiers.get(i)!)).join('\n')}`, full: `${header.split('\n').slice(0, 3).join('\n')}\n${entries.join('\n')}\n`, listed: picked.length, total: entries.length };
 }

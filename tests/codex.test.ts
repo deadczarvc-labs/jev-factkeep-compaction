@@ -82,18 +82,31 @@ describe('PowerShell reads', () => {
 });
 
 describe('buildDigest', () => {
-  it('lists the newest calls within the budget and says how many older ones it left out', () => {
-    const calls = parseRollout(rollout);
-    const budget = callEntry(calls[4]!).length + callEntry(calls[3]!).length + 2;
-    const d = buildDigest(calls, budget, () => undefined, 'F:/x/facts.md');
-    expect(d.listed).toBe(2);
+  const calls = parseRollout(rollout);
+  const size = (i: number, tier: 0 | 1 | 2) => callEntry(calls[i]!, undefined, tier).length + 1;
+  const HEADER = 600;
+
+  it('gives the newest calls their fact lines first and says how many older ones it left out', () => {
+    const d = buildDigest(calls, HEADER + size(4, 1) + size(3, 1), () => undefined, 'F:/x/facts.md');
+    expect(d).toMatchObject({ listed: 2, total: 5 });
+    expect(d.text).toContain('Error: expected 3 to be 4');
+    expect(d.text).not.toContain('- c3 ');
+    expect(d.text).toMatch(/3 older call\(s\) are not listed here; all 5: F:\/x\/facts\.md/);
+    expect(d.full).toContain('- c1 ');
     expect(buildDigest(calls, 10, () => undefined).listed).toBe(1); // the newest call is always listed
-    expect(d.total).toBe(5);
-    expect(d.listed).toBeLessThan(4);
-    expect(d.text).toContain('c4');
-    expect(d.text).not.toContain('c3');
-    expect(d.text).toMatch(/older call\(s\) are not listed here; all 5: F:\/x\/facts\.md/);
-    expect(d.full).toContain('c1');
+  });
+
+  it('names older calls in one line only with the room the fact lines leave', () => {
+    const d = buildDigest(calls, HEADER + size(4, 1) + size(3, 1) + size(2, 1) + size(1, 1) + size(0, 2), () => undefined);
+    expect(d.listed).toBe(5);
+    expect(d.text).toContain('gateway pid 67036');
+    expect(d.text).toMatch(/- c1 `[^`]*` — \d+ chars; full output/);
+    expect(d.text).not.toContain('re-run to see it');
+  });
+
+  it('upgrades the newest calls to the tier-0 text when there is room', () => {
+    const roomy = buildDigest(calls, 100_000, () => undefined);
+    expect(roomy.text).toContain('row 3 of an ordinary listing'); // tier 0 keeps a short observation whole
   });
 });
 
