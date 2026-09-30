@@ -67,14 +67,14 @@ Jev returns $p^C_i = J(S, q^C_i)$ and $p^R_i = J(S, q^R_i)$.
 **The rule**
 ([`compact.ts#L101-L115`](https://github.com/tamaratran/fast-jev-compaction/blob/e3f262a7f4d42bd8dd32ced30d26176f7cb545b0/src/compact.ts#L101-L115)):
 
-$$
+```math
 a_i =
 \begin{cases}
 \text{keep} & i \in P \ \text{ or } \ p^R_i \ge \theta \\
 \text{drop\_result} & p^C_i \ge \theta > p^R_i \\
 \text{drop\_call} & \text{otherwise}
 \end{cases}
-$$
+```
 
 **The output.** Each action produces:
 
