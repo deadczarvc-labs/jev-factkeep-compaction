@@ -6,18 +6,21 @@
  *
  * Saved under `<CODEX_HOME>/fast-jev/cache/<session>/` (a `cache` folder, which backups and indexers commonly skip);
  * folders older than 30 days are deleted. `FJC_CODEX_SAVE_OUTPUTS=0` saves nothing; `FJC_CODEX_BUDGET` overrides the
- * digest size in chars. Fails open: any error writes one line to `errors.log` there and adds nothing.
+ * digest size in chars; `FJC_CODEX_V4=1` turns on the G19 candidate (V4 lines, 4× per-call budget) in sheets of 100k
+ * chars and up. Fails open: any error writes one line to `errors.log` there and adds nothing.
  */
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { budgetFor, buildDigest, compactionStats, contextWindow, parseRollout, SMALL_OUTPUT } from '../src/codex.js';
+import { budgetFor, buildDigest, compactionStats, contextWindow, parseRollout, SMALL_OUTPUT, v4SheetSelector } from '../src/codex.js';
+import { factLines } from '../src/compact.js';
 import { redactSecrets } from '../src/secrets.js';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 const MAX_AGE_MS = 30 * 24 * 3600 * 1000;
 const MAX_FILE = 4 * 1024 * 1024;
+const V4_MIN_BUDGET = 100_000;
 
 export function cacheRoot(env: NodeJS.ProcessEnv = process.env): string {
   return join(env['CODEX_HOME'] || join(homedir(), '.codex'), 'fast-jev', 'cache');
@@ -68,13 +71,16 @@ export function run(input: HookInput, env: NodeJS.ProcessEnv = process.env): str
     }
   }
   const sheet = save ? join(dir, 'facts.md') : undefined;
-  const digest = buildDigest(calls, Number(env['FJC_CODEX_BUDGET']) || budgetFor(contextWindow(rollout)), (id) => saved.get(id), sheet);
+  const budget = Number(env['FJC_CODEX_BUDGET']) || budgetFor(contextWindow(rollout));
+  // G19 candidate, off until its held-out check passes: V4 lines with a 4× per-call budget in sheets of 100k chars and up.
+  const v4 = env['FJC_CODEX_V4'] === '1' && budget >= V4_MIN_BUDGET;
+  const digest = buildDigest(calls, budget, (id) => saved.get(id), sheet, 0.5, v4 ? v4SheetSelector(rollout, calls) : factLines);
   if (sheet) writeFileSync(sheet, redactSecrets(digest.full), 'utf8');
   mkdirSync(root, { recursive: true });
   const stats = compactionStats(rollout, calls);
   appendFileSync(
     join(root, 'log.jsonl'),
-    `${JSON.stringify({ ts: new Date().toISOString(), session: input.session_id, calls: digest.total, listed: digest.listed, chars: digest.text.length, saved: saved.size, ...stats, version: version() })}\n`,
+    `${JSON.stringify({ ts: new Date().toISOString(), session: input.session_id, calls: digest.total, listed: digest.listed, chars: digest.text.length, saved: saved.size, ...stats, selector: v4 ? 'v4x4' : 'regex', version: version() })}\n`,
   );
   expire(root);
   return JSON.stringify({ hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: redactSecrets(`${digest.text}\n(fast-jev-compaction ${version()})`) } });

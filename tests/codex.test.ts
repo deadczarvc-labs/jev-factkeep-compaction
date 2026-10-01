@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { expire, run } from '../codex/fact-sheet.js';
-import { budgetFor, buildDigest, callEntry, compactionStats, contextWindow, hybridLines, MAX_BUDGET, mdlLines, MIN_BUDGET, parseRollout, type CodexCall } from '../src/codex.js';
+import { budgetFor, buildDigest, callEntry, compactionStats, contextWindow, hybridLines, MAX_BUDGET, mdlLines, MIN_BUDGET, parseRollout, v4SheetSelector, type CodexCall } from '../src/codex.js';
 
 const item = (payload: object) => JSON.stringify({ type: 'response_item', payload });
 const execWrap = (output: string, code = 0) => [
@@ -188,6 +188,26 @@ describe('fact-sheet hook', () => {
     expect(saved).not.toContain(secret.slice(-12));
     expect(existsSync(join(dir, 'c3.txt'))).toBe(false); // short: whole in the digest
     expect(readFileSync(join(dir, 'facts.md'), 'utf8')).toContain('c1');
+  });
+
+  it('uses the G19 candidate only when FJC_CODEX_V4=1 and the sheet is 100k chars or more', () => {
+    const logged = (extra: NodeJS.ProcessEnv) => {
+      const { home, path } = setup();
+      run({ hook_event_name: 'SessionStart', source: 'compact', session_id: 's', transcript_path: path }, { CODEX_HOME: home, ...extra });
+      return JSON.parse(readFileSync(join(home, 'fast-jev', 'cache', 'log.jsonl'), 'utf8').trim()).selector;
+    };
+    expect(logged({})).toBe('regex');
+    expect(logged({ FJC_CODEX_V4: '1', FJC_CODEX_BUDGET: '50000' })).toBe('regex');
+    expect(logged({ FJC_CODEX_V4: '1', FJC_CODEX_BUDGET: '150000' })).toBe('v4x4');
+  });
+
+  it('the V4 selector keeps every error piece and stays within 4x the per-call budget', () => {
+    const calls = parseRollout(rollout);
+    const select = v4SheetSelector(rollout, calls);
+    const failing = calls.find((c) => c.id === 'c4')!;
+    const lines = select(failing.output, 300);
+    expect(lines.some((l) => l.includes('FAIL tests/a.test.ts'))).toBe(true);
+    expect(lines.reduce((n, l) => n + l.length + 1, 0)).toBeLessThanOrEqual(4 * 300);
   });
 
   it('saves nothing when saving is off', () => {

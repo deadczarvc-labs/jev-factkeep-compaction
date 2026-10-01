@@ -1,5 +1,6 @@
 import { deflateRawSync } from 'node:zlib';
 import { factLines, reproducible } from './compact.js';
+import { tokenValues, toks, type ValueContext, valueLines } from './value-select.js';
 
 /** Picks the lines of `text` worth keeping within `budget` chars, in text order. */
 export type LineSelector = (text: string, budget: number) => string[];
@@ -194,6 +195,56 @@ export function parseRollout(jsonl: string): CodexCall[] {
     }
   }
   return done;
+}
+
+/**
+ * Candidate G19 (session-tracks goal/g19/prereg.md, not on by default): fact lines by learned token value (V4,
+ * value-select.ts) with each call's fact budget ×`k`. The context per output is the one the value model was fitted on:
+ * the arguments of the last call before it, the last user text, the outputs left to the end, and the tokens the agent
+ * reused (named in a reply or call after an output introduced them); events as the G17/G19 harness reads a rollout.
+ */
+export function v4SheetSelector(jsonl: string, calls: readonly CodexCall[], k = 4): LineSelector {
+  const decodedOutput = new Map(calls.map((c) => [c.id, c.output]));
+  const textOf = (body: unknown): string =>
+    typeof body === 'string' ? body : Array.isArray(body) ? body.map((x) => String((x as Json)?.['text'] ?? '')).join('\n') : '';
+  const ev: Array<{ k: 'user' | 'asst' | 'in' | 'out'; text: string }> = [];
+  for (const line of jsonl.split('\n')) {
+    if (!line.includes('"response_item"')) continue;
+    let p: Json;
+    try {
+      const o = JSON.parse(line) as Json;
+      if (o['type'] !== 'response_item') continue;
+      p = o['payload'] as Json;
+    } catch {
+      continue;
+    }
+    const t = p['type'];
+    if (t === 'message' && (p['role'] === 'user' || p['role'] === 'assistant')) ev.push({ k: p['role'] === 'user' ? 'user' : 'asst', text: textOf(p['content']) });
+    else if (t === 'agent_message') ev.push({ k: 'asst', text: textOf(p['content']) });
+    else if (t === 'function_call' || t === 'custom_tool_call') ev.push({ k: 'in', text: String(p['arguments'] ?? p['input'] ?? '') });
+    else if (t === 'function_call_output' || t === 'custom_tool_call_output') ev.push({ k: 'out', text: decodedOutput.get(String(p['call_id'] ?? '')) ?? textOf(p['output']) });
+  }
+  const outs = ev.filter((e) => e.k === 'out');
+  const user = [...ev].reverse().find((e) => e.k === 'user')?.text ?? '';
+  const intro = new Map<string, number>();
+  const reused = new Set<string>();
+  ev.forEach((e, i) => {
+    const ts = toks(e.text);
+    if (e.k === 'in' || e.k === 'asst') for (const t of ts) if ((intro.get(t) ?? Infinity) < i) reused.add(t);
+    if (e.k === 'out') for (const t of ts) if (!intro.has(t)) intro.set(t, i);
+  });
+  const ctxOf = new Map<string, ValueContext>();
+  let lastIn = '';
+  let n = 0;
+  for (const e of ev) {
+    if (e.k === 'in') lastIn = e.text;
+    if (e.k === 'out') ctxOf.set(e.text, { input: lastIn, user, dist: outs.length - n++, reused });
+  }
+  const valuesOf = new Map<string, Map<string, number>>();
+  return (text, budget) => {
+    if (!valuesOf.has(text)) valuesOf.set(text, tokenValues(text, ctxOf.get(text) ?? { input: '', user, dist: 0, reused }));
+    return valueLines(text, budget * k, valuesOf.get(text)!);
+  };
 }
 
 export const SMALL_OUTPUT = 400; // an output up to this many chars is kept whole: it is almost all facts
