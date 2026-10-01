@@ -165,7 +165,7 @@ const ERROR_KEEP_CHARS = 2_000;
 // A line longer than FACT_LINE_CHARS (a JSON string with escaped newlines, a minified record, a wide table row) is
 // split into pieces rather than truncated, so a fact deep in a long line is still a candidate (JEV-CMP-17 held out:
 // an id at char ~4800 of a 10.7k-char MCP JSON line was lost to the 200-char cut).
-function pieces(line: string): string[] {
+export function pieces(line: string): string[] {
   const out: string[] = [];
   for (let rest of line.split('\\n')) {
     rest = rest.trim();
@@ -244,7 +244,7 @@ export function fullOutputNote(id: string): string {
 }
 
 /** A reduced result that keeps its head, its fact lines and its tail; an error keeps more. */
-export function factStubText(text: string, isError: boolean, headChars: number, factBudget: number, id?: string, rails: Rails = RAIL_TIERS[0]!): string {
+export function factStubText(text: string, isError: boolean, headChars: number, factBudget: number, id?: string, rails: Rails = RAIL_TIERS[0]!, select: (text: string, budget: number) => string[] = factLines): string {
   const headKeep = isError ? Math.max(headChars, ERROR_KEEP_CHARS) : headChars;
   if (text.length <= Math.max(rails.small, headKeep + TAIL_CHARS + 120)) return text;
   const headNl = text.lastIndexOf('\n', headKeep);
@@ -252,7 +252,7 @@ export function factStubText(text: string, isError: boolean, headChars: number, 
   const tailNl = text.indexOf('\n', text.length - TAIL_CHARS);
   const tailStart = tailNl === -1 || tailNl >= text.length - 1 ? text.length - TAIL_CHARS : tailNl + 1;
   if (text.length <= rails.denseKeep && factLines(text, Number.MAX_SAFE_INTEGER).reduce((n, l) => n + l.length + 1, 0) >= text.length * rails.denseShare) return text;
-  const facts = factLines(text.slice(headEnd, tailStart), Math.max(factBudget, Math.floor(text.length * rails.share)));
+  const facts = select(text.slice(headEnd, tailStart), Math.max(factBudget, Math.floor(text.length * rails.share)));
   const where = id ? fullOutputNote(id) : 'the full output stays in the session transcript';
   return `${text.slice(0, headEnd)}\n[fast-jev-compaction omitted ${tailStart - headEnd} chars of this tool result${isError ? ' (error)' : ''}${
     facts.length ? `; kept its ${facts.length} fact line(s)` : ''
