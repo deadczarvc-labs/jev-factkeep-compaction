@@ -228,3 +228,10 @@ go first, and the regex fact lines fill the rest of each call's budget:
 
 The rule (every lower bound above −0.5 pt, +2 pts at 50k) was written before the run. The data are the ones the bound was
 measured on, but the rule has no fitted parameter; a held-out check waits for new Codex sessions.
+
+Two controls narrow what this shows. Pinning *random* digit-token lines in the same calls gets most of the gain (reuse
+adds +0.3 … +1.1 pts over it, not significant), and a plain quota of digit-token lines in every call matches the rule
+within ±1 pt. On tokens without digits (paths, identifiers, file names the agent later used) the rule changes nothing
+measurable (−0.1 … +0.2 pts; stubs net +0.5 … +2.0 on both kinds together). So the honest reading: regex fact lines
+underweight lines with ids, versions and numbers that the agent acts on; past use is one way to find them, not the only
+one.
