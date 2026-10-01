@@ -85,6 +85,13 @@ in-flight guard. A headless host (SDK, the desktop app) has no between-turn
 compaction: the first refusal is logged once and the hook stops asking; the
 engine's own threshold (`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`) compacts there.
 
+Set `compactAtPercent` together with the engine's `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`, to the
+same value: the engine compacts at that share of the window minus its summary reserve (85 on a
+1M window ≈ 833k tokens), and the hook's gate (`compactAtPercent − 5`) must sit below it. A
+`compactAtPercent` far below the engine's demands a reduction no rail reaches (the 90% gate of
+2026-10-01); far above, the gate drops to 0 and tiny reductions pass. The station runs 85 / 85
+since 2026-10-02.
+
 Options are read from settings.json `pluginConfigs["fast-jev-compaction@…"].options`
 too, laid over what the host passed: the desktop host was seen passing the
 defaults (`compactAtPercent` 60) while settings held 95. A difference is logged
