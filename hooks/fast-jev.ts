@@ -23,7 +23,7 @@ import type {
 } from '../src/types.js';
 
 /** The running version, in every toast and log line (tests/hook.test.ts keeps it equal to plugin.json). */
-export const VERSION = '0.3.0-astra.18';
+export const VERSION = '0.3.0-astra.19';
 
 const HOOK_DEFAULTS = {
   compactAtPercent: 60,
@@ -476,20 +476,82 @@ async function offloadTarget($: {
   }
 }
 
+/**
+ * This plugin's options as settings.json `pluginConfigs["fast-jev-compaction@…"].options` holds them. The desktop host
+ * (SDK) was seen handing the hook its defaults while settings said otherwise: turn.complete fired from ~595k of a 1M
+ * window (60%, the default) in every desktop session with `compactAtPercent: 95` configured (2026-10-02).
+ */
+export function settingsOptions(settings: Readonly<Record<string, unknown>>): PluginOptions {
+  const configs = settings['pluginConfigs'];
+  const out: Record<string, string | number | boolean | readonly string[]> = {};
+  if (!configs || typeof configs !== 'object') return out;
+  for (const [key, value] of Object.entries(configs as Record<string, unknown>)) {
+    if (key !== 'fast-jev-compaction' && !key.startsWith('fast-jev-compaction@')) continue;
+    const options = (value as { options?: unknown } | null)?.options;
+    if (options && typeof options === 'object') Object.assign(out, options);
+  }
+  return out;
+}
+
+/** The options in force: the host's, with settings.json's laid over them; a difference is logged once. */
+async function readOptions(
+  $: { settings: { read: () => Promise<Readonly<Record<string, unknown>>> }; ui: { log: (text: string) => void } },
+  options: PluginOptions,
+  configured: HookConfig,
+): Promise<HookConfig> {
+  let extra: PluginOptions;
+  try {
+    extra = settingsOptions(await $.settings.read());
+  } catch {
+    return configured;
+  }
+  if (Object.keys(extra).length === 0) return configured;
+  const merged = resolveHookConfig({ ...options, ...extra });
+  if (merged.compactAtPercent !== configured.compactAtPercent) {
+    $.ui.log(`options: compactAtPercent ${merged.compactAtPercent} from settings.json (the host passed ${configured.compactAtPercent}) · ${VERSION}`);
+  }
+  return merged;
+}
+
+function errorText(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function fillText(usage: WindowUsage | undefined): string {
+  return usage?.tokens && usage.window ? `context ${usage.tokens}/${usage.window} tokens` : 'context fill unknown';
+}
+
 export const register: Register = (on: On, options: PluginOptions) => {
   const configured = resolveHookConfig(options);
   let compacting = false;
+  // Set once $.session.compact said the host has no between-turn compaction (SDK / desktop): the engine's own
+  // threshold compacts there, and asking again every turn only filled the transcript (300+ lines in 10 sessions).
+  let compactUnavailable = false;
+
+  // The options in force, read once per registration (readOptions).
+  let effective: Promise<HookConfig> | undefined;
 
   on('session.compact', async ($, event, next) => {
+    // The plugin's own compaction when it fell short of the gate: installed if the built-in summary then fails, so a
+    // summary aborted by Send now / Stop (or erroring) never leaves the session over the limit.
+    let own: SessionMessage[] | undefined;
     // A fallback still keeps every output: saved to files, and the summarizer is told where they are.
-    const fallback = async (reason: string) => {
-      notify($, `fallback to built-in summary (${reason})`);
-      const target = configured.saveFullOutputs ? await offloadTarget($) : undefined;
+    const fallback = async (reason: string, settings: HookConfig) => {
+      notify($, `fallback to built-in summary (${reason}); it takes 1–3 min, Send now or Stop aborts it`);
+      const target = settings.saveFullOutputs ? await offloadTarget($) : undefined;
       const note = target ? await saveForSummary(event.messages, target.dir, target.fs) : undefined;
-      return next(note ? { ...event, instructions: [event.instructions, note].filter(Boolean).join('\n\n') } : event);
+      try {
+        return await next(note ? { ...event, instructions: [event.instructions, note].filter(Boolean).join('\n\n') } : event);
+      } catch (error) {
+        if (!own) throw error;
+        notify($, `kept ${own.length}/${event.messages.length} messages after the built-in summary failed (${errorText(error)})`);
+        return { messages: own };
+      }
     };
+    let settings = configured;
     try {
-      const config = { ...configured, apiKey: await getApiKey($, configured) };
+      settings = await (effective ??= readOptions($, options, configured));
+      const config = { ...settings, apiKey: await getApiKey($, settings) };
       const usage = await $.session.usage().then(
         (u) => u.context,
         () => undefined,
@@ -507,7 +569,12 @@ export const register: Register = (on: On, options: PluginOptions) => {
       );
       for (const line of decisionLogLines(result)) $.ui.log(line);
       if (reductionRatio(result) < needed.gate) {
-        return fallback(`below the ${percent(needed.gate)} this window needs: ${summarize(result)}`);
+        if (reductionRatio(result) > 0) own = messages;
+        // `return` without `await`: a failing fallback must not land in the catch below and run the summary twice.
+        return fallback(
+          `below the ${percent(needed.gate)} this window needs: ${summarize(result)}; ${fillText(usage)}, compactAtPercent ${settings.compactAtPercent}`,
+          settings,
+        );
       }
       notify(
         $,
@@ -515,20 +582,28 @@ export const register: Register = (on: On, options: PluginOptions) => {
       );
       return { messages };
     } catch (error) {
-      return fallback(error instanceof Error ? error.message : String(error));
+      return fallback(errorText(error), settings);
     }
   });
 
   on('turn.complete', async ($, event: TurnCompleteInput, next) => {
-    if (compacting) return next(event);
+    if (compacting || compactUnavailable) return next(event);
+    let fill: WindowUsage | undefined;
+    let threshold = configured.compactAtPercent;
     try {
+      threshold = (await (effective ??= readOptions($, options, configured))).compactAtPercent;
       const { context } = await $.session.usage();
-      if ((context.percent ?? 0) < configured.compactAtPercent) return next(event);
+      fill = context;
+      if ((context.percent ?? 0) < threshold) return next(event);
       compacting = true;
       await $.session.compact();
     } catch (error) {
+      const text = errorText(error);
+      compactUnavailable = /not available/.test(text);
       $.ui.log(
-        `auto-compact skipped (${error instanceof Error ? error.message : String(error)})`,
+        compactUnavailable
+          ? `auto-compact skipped (${text}); not asked again this session: the engine's threshold compacts here (${fillText(fill)}, compactAtPercent ${threshold}) · ${VERSION}`
+          : `auto-compact skipped (${text})`,
       );
     } finally {
       compacting = false;

@@ -7,6 +7,8 @@ import {
   expireOutputs,
   saveForSummary,
   pressure,
+  register,
+  settingsOptions,
   decisionLog,
   decisionLogLines,
   resolveHookConfig,
@@ -315,6 +317,116 @@ describe('saved outputs: secrets, age and paths', () => {
     expect(await expireOutputs('R', fs, now)).toBe(1);
     expect(files.get('R/s-old/a.txt')!.text).toBe('');
     expect(files.get('R/s-new/b.txt')!.text).toBe('new output');
+  });
+});
+
+describe('settingsOptions', () => {
+  it('reads only this plugin\'s pluginConfigs options', () => {
+    expect(
+      settingsOptions({
+        pluginConfigs: {
+          'fast-jev-compaction@fast-jev-compaction': { options: { compactAtPercent: 95 } },
+          'jev-watch@jev-watch': { options: { watch: 'x' } },
+        },
+      }),
+    ).toEqual({ compactAtPercent: 95 });
+    expect(settingsOptions({})).toEqual({});
+    expect(settingsOptions({ pluginConfigs: { 'fast-jev-compaction@m': null } })).toEqual({});
+  });
+});
+
+describe('register', () => {
+  beforeEach(() => forgetAnswers());
+
+  type Handler = (...args: unknown[]) => Promise<unknown>;
+
+  function host(settings: Record<string, unknown>, usage: Record<string, number>, compact?: () => Promise<unknown>) {
+    const logs: string[] = [];
+    const calls = { compact: 0 };
+    const $ = {
+      settings: { read: async () => settings },
+      env: { get: async () => undefined },
+      ui: { log: (text: string) => logs.push(text), toast: () => undefined },
+      session: {
+        usage: async () => ({ context: usage }),
+        compact: async () => {
+          calls.compact++;
+          return compact ? compact() : { skip: 'none' };
+        },
+      },
+      // t1 (the Read) dropped, t2 kept: a real reduction, far below a full window's gate
+      http: { fetch: jevFetch((name) => (name === 'call_t2' || name === 'result_t2' ? 0.9 : 0.1)) },
+    };
+    return { $, logs, calls };
+  }
+
+  function load(options: Record<string, unknown> = {}) {
+    const handlers = new Map<string, Handler>();
+    register(((name: string, handler: Handler) => handlers.set(name, handler)) as never, {
+      apiKey: 'k',
+      preserveRecentMessages: 1,
+      saveFullOutputs: false,
+      ...options,
+    } as never);
+    return handlers;
+  }
+
+  const full = { tokens: 990_000, window: 1_000_000, percent: 99 };
+
+  it('installs its own compaction when the built-in summary it fell back to fails', async () => {
+    const { $, logs } = host({}, full);
+    const event = { trigger: 'auto', messages: transcript() };
+    const next = async () => {
+      throw new Error('reactive compaction did not settle ok');
+    };
+    const answer = (await load().get('session.compact')!($, event, next)) as { messages: SessionMessage[] };
+    expect(logs.some((line) => line.startsWith('fallback to built-in summary (below the 90%'))).toBe(true);
+    expect(logs.some((line) => /context 990000\/1000000 tokens, compactAtPercent 60/.test(line))).toBe(true);
+    expect(answer.messages.map((m) => m.handle)).toEqual(['h-0', undefined, undefined, 'h-tool-2', 'r-tool-2', 'h-5', 'h-6']);
+    expect(logs.at(-1)).toMatch(/^kept 7\/7 messages after the built-in summary failed \(reactive compaction did not settle ok\)/);
+  });
+
+  it('passes the failure on when it has nothing of its own to install', async () => {
+    const { $ } = host({}, full);
+    const event = { trigger: 'auto', messages: transcript() };
+    const next = async () => {
+      throw new Error('summary failed');
+    };
+    // everything newer than the first message pinned: nothing dropped, so no reduction to fall back on
+    await expect(load({ preserveRecentMessages: 50 }).get('session.compact')!($, event, next)).rejects.toThrow('summary failed');
+  });
+
+  it('takes compactAtPercent from settings.json when the host passed the default', async () => {
+    const { $, logs } = host(
+      { pluginConfigs: { 'fast-jev-compaction@fast-jev-compaction': { options: { compactAtPercent: 95 } } } },
+      // a small window, so the transcript (~300 tokens) is a real share of it, as in a long session
+      { tokens: 960, window: 1_000, percent: 96 },
+    );
+    let summarized = false;
+    const next = async () => {
+      summarized = true;
+      return { messages: [] };
+    };
+    const answer = (await load().get('session.compact')!($, { trigger: 'auto', messages: transcript() }, next)) as {
+      messages: SessionMessage[];
+    };
+    // 96% of the window back under 90% needs little: the hook's own result stands, no summary
+    expect(summarized).toBe(false);
+    expect(answer.messages).toHaveLength(7);
+    expect(logs[0]).toMatch(/^options: compactAtPercent 95 from settings\.json \(the host passed 60\)/);
+  });
+
+  it('asks a headless host for compaction once, then leaves it to the engine', async () => {
+    const { $, logs, calls } = host({}, { tokens: 700_000, window: 1_000_000, percent: 70 }, async () => {
+      throw new Error('$.session.compact: not available in a headless (-p / SDK) session yet');
+    });
+    const turn = load().get('turn.complete')!;
+    const next = async (e: unknown) => e;
+    await turn($, {}, next);
+    await turn($, {}, next);
+    expect(calls.compact).toBe(1);
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toMatch(/not asked again this session: the engine's threshold compacts here \(context 700000\/1000000 tokens, compactAtPercent 60\)/);
   });
 });
 

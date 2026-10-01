@@ -74,10 +74,21 @@ window and is accepted at `compactAtPercent − 5`; the part of the context outs
 the transcript (system prompt, tools) is subtracted, since it does not shrink.
 `minReductionRatio` applies only when the usage figures are unavailable. The outcome is shown as a toast and logged with the
 reduction, per-reason counts, state size and request count; a per-call
-`decisions:` line with both probabilities is logged for diagnosis. The
+`decisions:` line with both probabilities is logged for diagnosis. If the
+built-in summary it fell back to then fails (an error, or Send now / Stop
+aborting it mid-way: it takes 1–3 minutes on a 1M window), the hook installs
+its own compaction instead when that freed anything, so the session never
+stays over the limit. The
 `turn.complete` hook requests
 compaction when `context.percent` reaches `compactAtPercent`, with an
-in-flight guard.
+in-flight guard. A headless host (SDK, the desktop app) has no between-turn
+compaction: the first refusal is logged once and the hook stops asking; the
+engine's own threshold (`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`) compacts there.
+
+Options are read from settings.json `pluginConfigs["fast-jev-compaction@…"].options`
+too, laid over what the host passed: the desktop host was seen passing the
+defaults (`compactAtPercent` 60) while settings held 95. A difference is logged
+once as `options: compactAtPercent N from settings.json (the host passed M)`.
 
 ## Scope and caveat
 
