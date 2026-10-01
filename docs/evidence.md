@@ -235,3 +235,18 @@ within ±1 pt. On tokens without digits (paths, identifiers, file names the agen
 measurable (−0.1 … +0.2 pts; stubs net +0.5 … +2.0 on both kinds together). So the honest reading: regex fact lines
 underweight lines with ids, versions and numbers that the agent acts on; past use is one way to find them, not the only
 one.
+
+### Past use first, held out: withdrawn
+
+The rule above was found and first measured on the same 85 transcripts. On data that played no part in it:
+
+| set | where | change (union of tokens with and without digits unless noted) | 95% CI |
+|---|---|---|---|
+| 80 Hermes sessions (independent) | Codex sheet, 50k, digit tokens | −0.1 / +1.3 pts | [−0.8, +0.7] / [+0.2, +2.7] |
+| same | stubs, rail tiers 0–3 | −0.1 … +0.3 | every lower bound ≥ −0.4 |
+| 143 unused Claude transcripts | Codex sheet, 50k | digit +1.6 / +1.9, non-digit −0.9 / −1.0 | non-digit CIs below 0 |
+| same | stubs, rail tiers 0–3 | +0.6 … +1.7 | all above 0 |
+
+The rule written before the held-out run required a gain on the independent Hermes set; it did not show one (few tool
+inputs there repeat a token from an earlier output, so the rule rarely acts), and on the Claude transcripts the sheet lost
+non-digit tokens. The rule is withdrawn from the Codex sheet and the Claude hook; fact lines are the regex patterns again.

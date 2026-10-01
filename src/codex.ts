@@ -4,41 +4,6 @@ import { factLines, reproducible } from './compact.js';
 /** Picks the lines of `text` worth keeping within `budget` chars, in text order. */
 export type LineSelector = (text: string, budget: number) => string[];
 
-const DIGIT_TOKEN = /[A-Za-z0-9][A-Za-z0-9_.:/@#-]{5,}/g;
-const digitTokens = (s: string): string[] =>
-  (s.match(DIGIT_TOKEN) ?? []).map((t) => t.replace(/[.:,]+$/, '')).filter((t) => /\d/.test(t));
-
-/** Tokens with a digit that an output introduced and a later call's input used: what the agent acts on. */
-export function reusedTokens(calls: readonly CodexCall[]): Set<string> {
-  const intro = new Map<string, number>();
-  const reused = new Set<string>();
-  calls.forEach((c, i) => {
-    for (const t of digitTokens(c.command)) if ((intro.get(t) ?? Infinity) < i) reused.add(t);
-    for (const t of digitTokens(c.output)) if (!intro.has(t)) intro.set(t, i);
-  });
-  return reused;
-}
-
-/**
- * Lines holding a token the agent already used go first (up to 400 chars each), regex fact lines fill the rest. Past use
- * predicts later use (G13, tokens used after compaction: +2.7…+3.7 pts at 50k, +0.8…+0.9 at 165k, all CIs above 0).
- */
-export function reuseLines(reused: ReadonlySet<string>): LineSelector {
-  return (text, budget) => {
-    const pinned: string[] = [];
-    let used = 0;
-    for (const ln of text.split('\n')) {
-      const s = ln.slice(0, 400);
-      if (used + s.length + 1 <= budget && digitTokens(s).some((t) => reused.has(t))) {
-        pinned.push(s);
-        used += s.length + 1;
-      }
-    }
-    if (!pinned.length) return factLines(text, budget);
-    return [...pinned, ...factLines(text, budget - used).filter((x) => !pinned.some((p) => p.includes(x) || x.includes(p)))];
-  };
-}
-
 /**
  * Lines ranked by conditional compressed length (MDL): a 200-char chunk scores its deflate size with the preceding
  * 32 KB of the same output as dictionary, per char. Ids, hashes, verdicts and errors do not compress against what came
