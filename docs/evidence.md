@@ -250,3 +250,20 @@ The rule above was found and first measured on the same 85 transcripts. On data 
 The rule written before the held-out run required a gain on the independent Hermes set; it did not show one (few tool
 inputs there repeat a token from an earlier output, so the rule rarely acts), and on the Claude transcripts the sheet lost
 non-digit tokens. The rule is withdrawn from the Codex sheet and the Claude hook; fact lines are the regex patterns again.
+
+### Learned token value (V4): kept out of the Codex sheet
+
+Hermes jev-context-engine v0.8.0 picks a stub's fact lines by how likely the agent is to use their tokens (a logistic
+model on 13 token features, then, within the regex lines' chars: regex lines up to a third, every error piece, greedy
+weighted coverage). It passed a preregistered check on 80 fresh Hermes sessions. `src/value-select.ts` is the same
+selection (token values equal to 4e-16 on 2748 cases; lines equal in 2740, the rest from the regex patterns' ``
+around non-ASCII), not wired into any hook. In the Codex sheet, on 86 fresh Codex rollouts no earlier set used:
+
+| budget | tokens used after compaction (50% / 75%) | error lines | experimenter facts |
+|---|---|---|---|
+| 50k | +1.4 [−0.3, +3.3] / +3.2 [+1.3, +5.0] | +26.8 / +24.8 | −2.0 [−4.3, +0.6] |
+| 165k | +0.8 [−0.2, +2.2] / +0.9 [−0.3, +2.5] | +11.8 / +13.5 | −0.5 [−1.9, +0.5] |
+
+The rule written before the run required every lower bound above 0 at 50k and at most −2 on facts; both failed at
+50k, so the sheet keeps the regex lines. A sheet gives a call at most 1200 chars of fact lines, which leaves little
+room past the regex third and the error lines. The Claude hook's stubs wait for fresh Claude transcripts.
