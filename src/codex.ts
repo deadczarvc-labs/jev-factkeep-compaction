@@ -198,7 +198,7 @@ export function parseRollout(jsonl: string): CodexCall[] {
 }
 
 /**
- * Candidate G19 (session-tracks goal/g19/prereg.md, not on by default): fact lines by learned token value (V4,
+ * Candidate G19 (preregistered experiment, not on by default): fact lines by learned token value (V4,
  * value-select.ts) with each call's fact budget ×`k`. The context per output is the one the value model was fitted on:
  * the arguments of the last call before it, the last user text, the outputs left to the end, and the tokens the agent
  * reused (named in a reply or call after an output introduced them); events as the G17/G19 harness reads a rollout.

@@ -462,8 +462,8 @@ function notify(
 }
 
 // ponytail: the hook context's type is not exported under a name here; only session.cwd/id and fs.write are used.
-// Under `cache/`: the station's restic backup (`**/cache`) and indexers skip it, while `~/.claude` itself is backed up
-// offsite. Transcripts (`*.jsonl`) are kept out of that backup on purpose; their saved outputs must be too.
+// Under `cache/`: backup and indexing setups usually exclude it (docs/security.md). A backup that keeps transcripts
+// (`*.jsonl`) out on purpose must keep their saved outputs out too.
 let lastExpiry = 0;
 
 async function offloadTarget($: {

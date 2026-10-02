@@ -1,6 +1,6 @@
 // Secret values masked before a tool output is saved to a file (hooks/fast-jev.ts). The session transcript keeps the
-// original; the saved copy must not become one more place a key lives. Families follow the station's value-based
-// secret sweep: a value, not a field name, is a secret. A match whose body is one repeated character is a
+// original; the saved copy must not become one more place a key lives. Families are value-based: a value, not a
+// field name, is a secret. A match whose body is one repeated character is a
 // placeholder (`sk-xxxxxxxx…`) and is left alone.
 const FAMILIES: ReadonlyArray<readonly [name: string, pattern: RegExp, keep?: number]> = [
   ['private-key', /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g],

@@ -252,7 +252,7 @@ Every round tested the branch version that existed **before** that round (blind)
 | 2 | 4 | 57 | 7 | astra.4 | 50 |
 | 3 | 4 | 54 | 7 | astra.5 | 49 |
 | 4 | 5 | 75 | 8 | astra.6 | 70 |
-| 5 | 4 | 50 | 2 | astra.7 (this code) | 50 |
+| 5 | 4 | 50 | 2 | astra.7 (rules kept since) | 50 |
 | **pooled** | **25** | **336** | **36 (0.107, CI 0.076–0.145)** | | **304 (0.905, CI 0.868–0.934)** |
 
 - Pooled exact McNemar: $b = 268$ facts kept only by the branch, $c = 0$ kept only by upstream, $p = 2^{-267} \approx 4\times10^{-81}$.

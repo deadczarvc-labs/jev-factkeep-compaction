@@ -9,9 +9,9 @@ error). This note is the threat model for those files and what 0.3.0-astra.12 do
 | | before | after |
 |---|---|---|
 | Full outputs on disk | the session transcript (`~/.claude/projects/…/*.jsonl`), deleted after 30 days by default | the same, plus `<cwd>/.claude/fast-jev/cache/<session>/<tool_use_id>.txt` |
-| In backups | transcripts are `*.jsonl`, which the station's restic backup excludes | `**/cache` is excluded too, so the saved outputs stay out |
+| In backups | if your backup excludes transcripts (`*.jsonl`), it holds no full outputs | exclude `**/cache` too and the saved outputs stay out |
 | In git | — | `<cwd>/.claude/fast-jev/cache/.gitignore` with `*` |
-| In search indexes | — | the station's indexers skip `.claude` and `cache` folders |
+| In search indexes | — | exclude `.claude` and `cache` folders from local indexers |
 | Lifetime | 30 days (transcript cleanup) | 30 days: older saved outputs are emptied |
 
 ## What the hook does
