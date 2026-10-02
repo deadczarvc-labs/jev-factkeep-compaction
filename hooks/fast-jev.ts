@@ -23,7 +23,7 @@ import type {
 } from '../src/types.js';
 
 /** The running version, in every toast and log line (tests/hook.test.ts keeps it equal to plugin.json). */
-export const VERSION = '0.3.0-astra.20';
+export const VERSION = '0.3.0-astra.21';
 
 const HOOK_DEFAULTS = {
   compactAtPercent: 60,
@@ -594,7 +594,9 @@ export const register: Register = (on: On, options: PluginOptions) => {
   });
 
   on('turn.complete', async ($, event: TurnCompleteInput, next) => {
-    if (compacting || compactUnavailable) return next(event);
+    // A subagent's turn ends while the main turn still runs: compacting there only fails with "a turn is running"
+    // (79 transcript lines by 2026-10-02). Checked before any await, so parallel subagents cannot race past it.
+    if (event.agentId || compacting || compactUnavailable) return next(event);
     let fill: WindowUsage | undefined;
     let threshold = configured.compactAtPercent;
     try {
@@ -614,7 +616,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
           { to: 'debug' },
         );
       } else {
-        $.ui.log(`auto-compact skipped (${text})`);
+        $.ui.log(`auto-compact skipped (${text})`, { to: 'debug' });
       }
     } finally {
       compacting = false;

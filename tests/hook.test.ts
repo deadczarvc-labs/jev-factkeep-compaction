@@ -440,6 +440,35 @@ describe('register', () => {
   });
 });
 
+describe('turn.complete of a subagent', () => {
+  it('never asks for compaction while the main turn runs', async () => {
+    let usage = 0;
+    let compact = 0;
+    const $ = {
+      settings: { read: async () => ({}) },
+      ui: { log: () => undefined, toast: () => undefined },
+      session: {
+        usage: async () => {
+          usage++;
+          return { context: { tokens: 990_000, window: 1_000_000, percent: 99 } };
+        },
+        compact: async () => {
+          compact++;
+          throw new Error('$.session.compact: a turn is running');
+        },
+      },
+    };
+    const handlers = new Map<string, (...args: unknown[]) => Promise<unknown>>();
+    register(((name: string, handler: (...args: unknown[]) => Promise<unknown>) => handlers.set(name, handler)) as never, {} as never);
+    const next = async (e: unknown) => e;
+    await handlers.get('turn.complete')!($, { agentId: 'sub-1' }, next);
+    expect([usage, compact]).toEqual([0, 0]);
+    // the main loop's own turn still checks the window
+    await handlers.get('turn.complete')!($, {}, next);
+    expect([usage, compact]).toEqual([1, 1]);
+  });
+});
+
 describe('version', () => {
   it('matches plugin.json, so a toast names the version that really runs', async () => {
     const { readFileSync } = await import('node:fs');
