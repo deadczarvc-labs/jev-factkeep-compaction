@@ -342,11 +342,15 @@ describe('register', () => {
 
   function host(settings: Record<string, unknown>, usage: Record<string, number>, compact?: () => Promise<unknown>) {
     const logs: string[] = [];
+    const debug: string[] = [];
     const calls = { compact: 0 };
     const $ = {
       settings: { read: async () => settings },
       env: { get: async () => undefined },
-      ui: { log: (text: string) => logs.push(text), toast: () => undefined },
+      ui: {
+        log: (text: string, options?: { to?: string }) => (options?.to === 'debug' ? debug : logs).push(text),
+        toast: () => undefined,
+      },
       session: {
         usage: async () => ({ context: usage }),
         compact: async () => {
@@ -357,7 +361,7 @@ describe('register', () => {
       // t1 (the Read) dropped, t2 kept: a real reduction, far below a full window's gate
       http: { fetch: jevFetch((name) => (name === 'call_t2' || name === 'result_t2' ? 0.9 : 0.1)) },
     };
-    return { $, logs, calls };
+    return { $, logs, debug, calls };
   }
 
   function load(options: Record<string, unknown> = {}) {
@@ -374,12 +378,15 @@ describe('register', () => {
   const full = { tokens: 990_000, window: 1_000_000, percent: 99 };
 
   it('installs its own compaction when the built-in summary it fell back to fails', async () => {
-    const { $, logs } = host({}, full);
+    const { $, logs, debug } = host({}, full);
     const event = { trigger: 'auto', messages: transcript() };
     const next = async () => {
       throw new Error('reactive compaction did not settle ok');
     };
     const answer = (await load().get('session.compact')!($, event, next)) as { messages: SessionMessage[] };
+    // the transcript gets outcomes only; per-call decisions go to the debug log
+    expect(logs.some((line) => line.startsWith('decisions'))).toBe(false);
+    expect(debug.some((line) => line.startsWith('decisions: t1:Read:drop_call'))).toBe(true);
     expect(logs.some((line) => line.startsWith('fallback to built-in summary (below the 90%'))).toBe(true);
     expect(logs.some((line) => /context 990000\/1000000 tokens, compactAtPercent 60/.test(line))).toBe(true);
     expect(answer.messages.map((m) => m.handle)).toEqual(['h-0', undefined, undefined, 'h-tool-2', 'r-tool-2', 'h-5', 'h-6']);
@@ -397,7 +404,7 @@ describe('register', () => {
   });
 
   it('takes compactAtPercent from settings.json when the host passed the default', async () => {
-    const { $, logs } = host(
+    const { $, logs, debug } = host(
       { pluginConfigs: { 'fast-jev-compaction@fast-jev-compaction': { options: { compactAtPercent: 95 } } } },
       // a small window, so the transcript (~300 tokens) is a real share of it, as in a long session
       { tokens: 960, window: 1_000, percent: 96 },
@@ -413,11 +420,12 @@ describe('register', () => {
     // 96% of the window back under 90% needs little: the hook's own result stands, no summary
     expect(summarized).toBe(false);
     expect(answer.messages).toHaveLength(7);
-    expect(logs[0]).toMatch(/^options: compactAtPercent 95 from settings\.json \(the host passed 60\)/);
+    expect(debug[0]).toMatch(/^options: compactAtPercent 95 from settings\.json \(the host passed 60\)/);
+    expect(logs.some((line) => line.startsWith('options'))).toBe(false);
   });
 
   it('asks a headless host for compaction once, then leaves it to the engine', async () => {
-    const { $, logs, calls } = host({}, { tokens: 700_000, window: 1_000_000, percent: 70 }, async () => {
+    const { $, logs, debug, calls } = host({}, { tokens: 700_000, window: 1_000_000, percent: 70 }, async () => {
       throw new Error('$.session.compact: not available in a headless (-p / SDK) session yet');
     });
     const turn = load().get('turn.complete')!;
@@ -425,8 +433,10 @@ describe('register', () => {
     await turn($, {}, next);
     await turn($, {}, next);
     expect(calls.compact).toBe(1);
-    expect(logs).toHaveLength(1);
-    expect(logs[0]).toMatch(/not asked again this session: the engine's threshold compacts here \(context 700000\/1000000 tokens, compactAtPercent 60\)/);
+    // expected on that host: the debug log, never the transcript
+    expect(logs).toHaveLength(0);
+    expect(debug).toHaveLength(1);
+    expect(debug[0]).toMatch(/not asked again this session: the engine's threshold compacts here \(context 700000\/1000000 tokens, compactAtPercent 60\)/);
   });
 });
 

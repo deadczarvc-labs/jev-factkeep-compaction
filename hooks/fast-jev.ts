@@ -23,7 +23,7 @@ import type {
 } from '../src/types.js';
 
 /** The running version, in every toast and log line (tests/hook.test.ts keeps it equal to plugin.json). */
-export const VERSION = '0.3.0-astra.19';
+export const VERSION = '0.3.0-astra.20';
 
 const HOOK_DEFAULTS = {
   compactAtPercent: 60,
@@ -495,7 +495,10 @@ export function settingsOptions(settings: Readonly<Record<string, unknown>>): Pl
 
 /** The options in force: the host's, with settings.json's laid over them; a difference is logged once. */
 async function readOptions(
-  $: { settings: { read: () => Promise<Readonly<Record<string, unknown>>> }; ui: { log: (text: string) => void } },
+  $: {
+    settings: { read: () => Promise<Readonly<Record<string, unknown>>> };
+    ui: { log: (text: string, options?: { to?: 'transcript' | 'debug' }) => void };
+  },
   options: PluginOptions,
   configured: HookConfig,
 ): Promise<HookConfig> {
@@ -508,7 +511,10 @@ async function readOptions(
   if (Object.keys(extra).length === 0) return configured;
   const merged = resolveHookConfig({ ...options, ...extra });
   if (merged.compactAtPercent !== configured.compactAtPercent) {
-    $.ui.log(`options: compactAtPercent ${merged.compactAtPercent} from settings.json (the host passed ${configured.compactAtPercent}) · ${VERSION}`);
+    // Debug log only: a line in the transcript read as breakage; jev-watch still records it.
+    $.ui.log(`options: compactAtPercent ${merged.compactAtPercent} from settings.json (the host passed ${configured.compactAtPercent}) · ${VERSION}`, {
+      to: 'debug',
+    });
   }
   return merged;
 }
@@ -567,7 +573,8 @@ export const register: Register = (on: On, options: PluginOptions) => {
         needed.minReduction,
         config.saveFullOutputs ? await offloadTarget($) : undefined,
       );
-      for (const line of decisionLogLines(result)) $.ui.log(line);
+      // Per-call decisions are diagnosis, not news: debug log (and jev-watch), never the transcript.
+      for (const line of decisionLogLines(result)) $.ui.log(line, { to: 'debug' });
       if (reductionRatio(result) < needed.gate) {
         if (reductionRatio(result) > 0) own = messages;
         // `return` without `await`: a failing fallback must not land in the catch below and run the summary twice.
@@ -600,11 +607,15 @@ export const register: Register = (on: On, options: PluginOptions) => {
     } catch (error) {
       const text = errorText(error);
       compactUnavailable = /not available/.test(text);
-      $.ui.log(
-        compactUnavailable
-          ? `auto-compact skipped (${text}); not asked again this session: the engine's threshold compacts here (${fillText(fill)}, compactAtPercent ${threshold}) · ${VERSION}`
-          : `auto-compact skipped (${text})`,
-      );
+      // The headless refusal is expected there, so it goes to the debug log (and jev-watch), not the transcript.
+      if (compactUnavailable) {
+        $.ui.log(
+          `auto-compact skipped (${text}); not asked again this session: the engine's threshold compacts here (${fillText(fill)}, compactAtPercent ${threshold}) · ${VERSION}`,
+          { to: 'debug' },
+        );
+      } else {
+        $.ui.log(`auto-compact skipped (${text})`);
+      }
     } finally {
       compacting = false;
     }
