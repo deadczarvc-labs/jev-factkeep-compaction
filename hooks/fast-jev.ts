@@ -23,7 +23,7 @@ import type {
 } from '../src/types.js';
 
 /** The running version, in every toast and log line (tests/hook.test.ts keeps it equal to plugin.json). */
-export const VERSION = '0.3.0-astra.21';
+export const VERSION = '0.3.0-astra.22';
 
 const HOOK_DEFAULTS = {
   compactAtPercent: 60,
@@ -185,6 +185,9 @@ export function forgetAnswers(): void {
 /** The context window's fill, as `$.session.usage().context` has it. */
 export type WindowUsage = { tokens?: number; window?: number };
 
+/** At most this share of the window is taken as system prompt and tools (first calls: 55–127k of 1M, 2026-10-02). */
+export const OVERHEAD_CAP = 0.15;
+
 export type Pressure = {
   /** The char reduction the rails must reach. */
   minReduction: number;
@@ -197,15 +200,28 @@ export type Pressure = {
  * accepted when it lands at or below `compactAtPercent − 5`. A fixed minimum (the old 30% rails floor, 25% gate) made
  * repeated compactions of one session cut more than the window needed and fall back to the summary once kept facts
  * filled it; in a simulated session one window long this keeps 97.0% of 336 preregistered facts against 92.6%. The
- * part of the context outside the transcript (system prompt, tools) does not shrink: it is the window's token count
- * minus the transcript's own estimate. Without usage figures the fixed defaults apply.
+ * part of the context outside the transcript (system prompt, tools) does not shrink. Its size is the window's token
+ * count minus the transcript's estimate, capped by `lowest` (the smallest context seen this session) and by
+ * OVERHEAD_CAP of the window: the estimate reads ~1.75× low on Cyrillic and code (engine postTokens 356 878 against
+ * 628 724 real, 2026-10-02), which inflated the overhead to ~400k and once demanded 42% where 5% sufficed (core summary,
+ * 110 s). The char ratio of a reduction applies to the transcript's real tokens. Without usage figures the fixed defaults
+ * apply.
  */
-export function pressure(usage: WindowUsage | undefined, transcriptTokens: number, config: HookConfig): Pressure {
+export function pressure(
+  usage: WindowUsage | undefined,
+  transcriptTokens: number,
+  config: HookConfig,
+  lowest?: number,
+): Pressure {
   if (!usage?.tokens || !usage.window || transcriptTokens <= 0) {
     return { minReduction: RAIL_FLOOR, gate: config.minReductionRatio };
   }
-  const overhead = Math.max(0, usage.tokens - transcriptTokens);
-  const need = (percent: number) => 1 - ((percent / 100) * usage.window! - overhead) / transcriptTokens;
+  const overhead = Math.max(
+    0,
+    Math.min(usage.tokens - transcriptTokens, lowest ?? Number.POSITIVE_INFINITY, OVERHEAD_CAP * usage.window),
+  );
+  const transcript = usage.tokens - overhead;
+  const need = (percent: number) => 1 - ((percent / 100) * usage.window! - overhead) / transcript;
   const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x));
   return {
     minReduction: clamp(need(config.compactAtPercent - 10), 0.05, 0.9),
@@ -533,6 +549,11 @@ export const register: Register = (on: On, options: PluginOptions) => {
   // Set once $.session.compact said the host has no between-turn compaction (SDK / desktop): the engine's own
   // threshold compacts there, and asking again every turn only filled the transcript (300+ lines in 10 sessions).
   let compactUnavailable = false;
+  // The smallest main-loop context seen in this session: an upper bound on system prompt + tools (see pressure()).
+  let lowest: number | undefined;
+  const seen = (tokens: number | undefined) => {
+    if (tokens && tokens > 0) lowest = Math.min(lowest ?? tokens, tokens);
+  };
 
   // The options in force, read once per registration (readOptions).
   let effective: Promise<HookConfig> | undefined;
@@ -562,7 +583,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
         (u) => u.context,
         () => undefined,
       );
-      const needed = pressure(usage, transcriptTokens(event.messages), config);
+      const needed = pressure(usage, transcriptTokens(event.messages), config, lowest);
       const { result, messages } = await compactSession(
         event.messages,
         config,
@@ -603,6 +624,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
       threshold = (await (effective ??= readOptions($, options, configured))).compactAtPercent;
       const { context } = await $.session.usage();
       fill = context;
+      seen(context.tokens ?? undefined);
       if ((context.percent ?? 0) < threshold) return next(event);
       compacting = true;
       await $.session.compact();

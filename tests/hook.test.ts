@@ -206,6 +206,18 @@ describe('pressure', () => {
     expect(pressure({ tokens: 190_000, window: 200_000 }, 190_000, config).minReduction).toBeGreaterThan(0.45);
     expect(pressure({ tokens: 40_000, window: 200_000 }, 40_000, config)).toEqual({ minReduction: 0.05, gate: 0 });
   });
+
+  it('caps an overhead the low transcript estimate inflates', () => {
+    // 913e0031, 2026-10-02T04:28Z: 950k in a 1M window, estimate ~540k, so tokens - estimate claimed 410k of overhead
+    const at85 = resolveHookConfig({ compactAtPercent: 85 });
+    const usage = { tokens: 950_000, window: 1_000_000 };
+    // overhead capped at 15% of the window: back under 80% needs (800k - 150k) of 800k kept
+    expect(pressure(usage, 540_000, at85).gate).toBeCloseTo(1 - 650 / 800, 5);
+    // the smallest context seen this session bounds it further
+    expect(pressure(usage, 540_000, at85, 90_000).gate).toBeCloseTo(1 - 710 / 860, 5);
+    // the uncapped figure would have demanded what a 37% reduction missed
+    expect(1 - (800_000 - 410_000) / 540_000).toBeGreaterThan(0.27);
+  });
 });
 
 describe('offloadOutputs', () => {
@@ -383,12 +395,14 @@ describe('register', () => {
     const next = async () => {
       throw new Error('reactive compaction did not settle ok');
     };
-    const answer = (await load().get('session.compact')!($, event, next)) as { messages: SessionMessage[] };
+    // compactAtPercent 20: back under 15% of 1M with 150k of overhead leaves nothing for the transcript, so the gate
+    // clamps at 90%, more than this cut reaches
+    const answer = (await load({ compactAtPercent: 20 }).get('session.compact')!($, event, next)) as { messages: SessionMessage[] };
     // the transcript gets outcomes only; per-call decisions go to the debug log
     expect(logs.some((line) => line.startsWith('decisions'))).toBe(false);
     expect(debug.some((line) => line.startsWith('decisions: t1:Read:drop_call'))).toBe(true);
     expect(logs.some((line) => line.startsWith('fallback to built-in summary (below the 90%'))).toBe(true);
-    expect(logs.some((line) => /context 990000\/1000000 tokens, compactAtPercent 60/.test(line))).toBe(true);
+    expect(logs.some((line) => /context 990000\/1000000 tokens, compactAtPercent 20/.test(line))).toBe(true);
     expect(answer.messages.map((m) => m.handle)).toEqual(['h-0', undefined, undefined, 'h-tool-2', 'r-tool-2', 'h-5', 'h-6']);
     expect(logs.at(-1)).toMatch(/^kept 7\/7 messages after the built-in summary failed \(reactive compaction did not settle ok\)/);
   });

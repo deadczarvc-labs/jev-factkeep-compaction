@@ -71,7 +71,10 @@ context window needs, the hook logs a fallback and delegates to Claude Code's
 built-in compaction. What the window needs comes from `$.session.usage()`: the
 compaction must bring the context back to `compactAtPercent − 10` percent of the
 window and is accepted at `compactAtPercent − 5`; the part of the context outside
-the transcript (system prompt, tools) is subtracted, since it does not shrink.
+the transcript (system prompt, tools) is subtracted, since it does not shrink. It is
+capped by the smallest context seen in the session and by 15% of the window: the
+char-based transcript estimate reads ~1.75× low, and the uncapped remainder once
+demanded a 42% cut where 5% sufficed (2026-10-02).
 `minReductionRatio` applies only when the usage figures are unavailable. The outcome is shown as a toast and logged with the
 reduction, per-reason counts, state size and request count; a per-call
 `decisions:` line with both probabilities is logged for diagnosis. If the
