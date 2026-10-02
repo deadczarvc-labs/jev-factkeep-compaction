@@ -85,12 +85,14 @@ in-flight guard. A headless host (SDK, the desktop app) has no between-turn
 compaction: the first refusal is logged once and the hook stops asking; the
 engine's own threshold (`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`) compacts there.
 
-Set `compactAtPercent` together with the engine's `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`, to the
-same value: the engine compacts at that share of the window minus its summary reserve (85 on a
-1M window ≈ 833k tokens), and the hook's gate (`compactAtPercent − 5`) must sit below it. A
-`compactAtPercent` far below the engine's demands a reduction no rail reaches (the 90% gate of
-2026-10-01); far above, the gate drops to 0 and tiny reductions pass. The station runs 85 / 85
-since 2026-10-02.
+Set `compactAtPercent` together with the engine's `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE`. The engine
+compacts at that share of the window minus its summary reserve (85 on a 1M window ≈ 833k tokens);
+the hook's gate (`compactAtPercent − 5`) must sit below that trigger and above the floor the hook can
+reach (all calls dropped, facts kept: ~544–629k in a long session on 2026-10-02). Below the floor
+every compaction falls back to the built-in summary (the 90% gate of 2026-10-01); at the trigger the
+gate drops to 0 and tiny reductions pass. A cap under the trigger also spaces compactions out. The
+station runs 85 / 75 since 2026-10-02, chosen by minimax regret over a renewal-reward model and
+three adversarial checks (`~/session-tracks/autocompact-threshold-20261002/final/REPORT.md`).
 
 Options are read from settings.json `pluginConfigs["fast-jev-compaction@…"].options`
 too, laid over what the host passed: the desktop host was seen passing the
