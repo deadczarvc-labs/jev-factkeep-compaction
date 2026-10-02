@@ -8,9 +8,8 @@ note, observations keep their errors, ids, codes and counts.**
 [![CI](https://github.com/deadczarvc-labs/jev-factkeep-compaction/actions/workflows/ci.yml/badge.svg)](https://github.com/deadczarvc-labs/jev-factkeep-compaction/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/deadczarvc-labs/jev-factkeep-compaction?include_prereleases&sort=semver)](https://github.com/deadczarvc-labs/jev-factkeep-compaction/releases/latest)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![Upstream PR](https://img.shields.io/badge/upstream-PR%20%23118-6e40c9)](https://github.com/tamaratran/fast-jev-compaction/pull/118)
 
-[Why facts are lost](docs/why-facts-are-lost.md) · [Evidence](docs/evidence.md) · [Install](#install-in-claude-code) · [Hermes port](https://github.com/deadczarvc/hermes-jev-compaction) · [Upstream](https://github.com/tamaratran/fast-jev-compaction)
+[Why facts are lost](docs/why-facts-are-lost.md) · [Evidence](docs/evidence.md) · [Install](#install-in-claude-code) · [Hermes port](https://github.com/deadczarvc/hermes-jev-compaction) · [Upstream (not maintained)](https://github.com/tamaratran/fast-jev-compaction)
 
 </div>
 
@@ -18,6 +17,10 @@ note, observations keep their errors, ids, codes and counts.**
 
 A fork of [tamaratran/fast-jev-compaction](https://github.com/tamaratran/fast-jev-compaction). The plugin keeps the
 upstream id `fast-jev-compaction` (0.3.0-astra.6), so it replaces an upstream install as is.
+
+Upstream has had no commits since 2026-09-18 and is not maintained. The pull requests this fork sent there
+(#118, #119, #120, #122) are closed; development continues here, and issues and pull requests are welcome in this
+repository.
 
 The upstream goal is to drop what re-running a tool would give back and never lose an exact error, path or command.
 Upstream erases every call Jev scores as stale, observations of the world included. Here nothing is erased:
