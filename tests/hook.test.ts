@@ -435,6 +435,8 @@ describe('register', () => {
     expect(summarized).toBe(false);
     expect(answer.messages).toHaveLength(7);
     expect(debug[0]).toMatch(/^options: compactAtPercent 95 from settings\.json \(the host passed 60\)/);
+    // the outcome line names the pair in force, so a held-out check can attribute the event
+    expect(logs.at(-1)).toMatch(/^kept 7\/7 messages, no summary \(.*; context 960\/1000 tokens, compactAtPercent 95\)/);
     expect(logs.some((line) => line.startsWith('options'))).toBe(false);
   });
 

@@ -23,7 +23,7 @@ import type {
 } from '../src/types.js';
 
 /** The running version, in every toast and log line (tests/hook.test.ts keeps it equal to plugin.json). */
-export const VERSION = '0.3.0-astra.22';
+export const VERSION = '0.3.0-astra.23';
 
 const HOOK_DEFAULTS = {
   compactAtPercent: 60,
@@ -606,7 +606,8 @@ export const register: Register = (on: On, options: PluginOptions) => {
       }
       notify(
         $,
-        `kept ${messages.length}/${event.messages.length} messages, no summary (${summarize(result)})`,
+        // fill and the pair in force: what a held-out check attributes the event to (track autocompact-threshold)
+        `kept ${messages.length}/${event.messages.length} messages, no summary (${summarize(result)}; ${fillText(usage)}, compactAtPercent ${settings.compactAtPercent})`,
       );
       return { messages };
     } catch (error) {
