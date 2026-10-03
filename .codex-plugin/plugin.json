@@ -1,0 +1,13 @@
+{
+  "name": "fast-jev-compaction",
+  "version": "0.3.0-astra.26",
+  "description": "Restore locally recovered tool-output facts after Codex compaction, without a Jev request.",
+  "author": {
+    "name": "deadczarvc",
+    "url": "https://github.com/deadczarvc"
+  },
+  "homepage": "https://github.com/deadczarvc-labs/jev-factkeep-compaction",
+  "repository": "https://github.com/deadczarvc-labs/jev-factkeep-compaction",
+  "license": "MIT",
+  "hooks": "./.codex-plugin/hooks.json"
+}

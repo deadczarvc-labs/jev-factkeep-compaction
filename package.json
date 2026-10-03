@@ -15,11 +15,16 @@
   },
   "files": [
     "dist",
+    ".claude-plugin/plugin.json",
+    ".codex-plugin",
+    "codex-dist/src",
+    "codex-dist/codex",
     "README.md",
     "LICENSE"
   ],
   "scripts": {
     "build": "tsc",
+    "build:codex": "tsc -p tsconfig.codex-build.json",
     "typecheck": "tsc --noEmit && npm run typecheck:hooks && tsc -p tsconfig.codex.json",
     "test": "vitest run",
     "demo": "tsx examples/demo.ts",

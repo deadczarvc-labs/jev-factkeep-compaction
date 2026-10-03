@@ -330,7 +330,41 @@ sheet sized at 5% of the model's window: the newest outputs verbatim within half
 (the regex fact patterns of the Claude Code hook; a reproducible read becomes a re-run line), the oldest as one line each, and the path of `facts.md`, which lists them all.
 It makes no Jev call and takes tens of milliseconds.
 
-Install: `npm install` in a checkout, then add a group at the **end** of `SessionStart` in `~/.codex/hooks.json`
+Choose exactly one installation method. Registering both the plugin and the manual hook runs recovery twice
+on the same compaction. This project does not edit your `~/.codex/hooks.json` or its trust records.
+
+### Option 1: Codex plugin loader
+
+Build the runtime from this checkout before installing it through a local marketplace:
+
+```sh
+npm install
+npm run build:codex
+codex plugin marketplace add /absolute/path/to/checkout
+codex plugin add fast-jev-compaction@fast-jev-compaction
+```
+
+The plugin route requires a Codex build that executes bundled lifecycle hooks. Codex CLI 0.159.1 and
+app runtime 0.160.0 currently report `plugin_hooks removed false`: they can discover an enabled plugin
+and list its hook without running it. On those builds use the existing manual option below instead;
+plugin installation or discovery alone is not proof of recovery in the next model request.
+
+On a host that supports bundled hooks, restart Codex, then review and trust the plugin hook in `/hooks`.
+The compatibility manifest is
+[`.codex-plugin/plugin.json`](.codex-plugin/plugin.json); its explicit hooks path loads only
+[`.codex-plugin/hooks.json`](.codex-plugin/hooks.json), not the Claude hook configuration.
+It registers one `SessionStart` command with matcher `compact`, timeout 30 seconds and
+`additionalContextLimit` 70000. The command runs the emitted `codex-dist/codex/fact-sheet.js` with Node;
+no TypeScript loader or Jev API key is needed at runtime. Both source and emitted hooks read the release
+version from `.claude-plugin/plugin.json`, not the library version in `package.json`.
+
+Disable or remove any existing manual fact-sheet hook before enabling the plugin. Check `/hooks` for one
+enabled recovery registration; a saved log by itself does not prove that Codex loaded its context into the next
+model request. See the [Codex plugin guide](https://developers.openai.com/plugins/build/plugins) for loader setup.
+
+### Option 2: manual hook, without the plugin
+
+Run `npm install` in a checkout, then add a group at the **end** of `SessionStart` in `~/.codex/hooks.json`
 (Codex keys hook trust by position, so a group inserted earlier un-trusts the ones after it) and trust it in `/hooks`:
 
 ```json

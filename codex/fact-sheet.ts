@@ -11,14 +11,14 @@
  */
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { budgetFor, buildDigest, compactionStats, contextWindow, parseRollout, SMALL_OUTPUT, v4SheetSelector } from '../src/codex.js';
 import { factLines } from '../src/compact.js';
 import { redactSecrets } from '../src/secrets.js';
 import { safeSlice } from '../src/state.js';
 
-const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
+const REPO = pluginRootFor(import.meta.url);
 const MAX_AGE_MS = 30 * 24 * 3600 * 1000;
 const MAX_FILE = 4 * 1024 * 1024;
 const V4_MIN_BUDGET = 100_000;
@@ -29,12 +29,25 @@ export function cacheRoot(env: NodeJS.ProcessEnv = process.env): string {
 
 const safe = (id: string) => id.replace(/[^\w.-]/g, '_').slice(0, 120) || '_';
 
-function version(): string {
+/** The same canonical root for the source hook and its codex-dist/codex emission. */
+export function pluginRootFor(entryUrl: string): string {
+  const entry = fileURLToPath(entryUrl);
+  const parent = dirname(dirname(entry));
+  const root = basename(parent) === 'codex-dist' && basename(entry) === 'fact-sheet.js' ? dirname(parent) : parent;
+  return root.replace(/\\/g, '/').replace(/^\/(?=[A-Za-z]:\/)/, '');
+}
+
+/** Read our release metadata, not the library package version or a foreign plugin's version. */
+export function readPluginVersion(root: string): string {
   try {
-    return String((JSON.parse(readFileSync(join(REPO, '.claude-plugin', 'plugin.json'), 'utf8')) as { version?: string }).version ?? '?');
+    return String((JSON.parse(readFileSync(join(root, '.claude-plugin', 'plugin.json'), 'utf8')) as { version?: string }).version ?? '?');
   } catch {
     return '?';
   }
+}
+
+function version(): string {
+  return readPluginVersion(REPO);
 }
 
 export function expire(root: string, now = Date.now()): void {

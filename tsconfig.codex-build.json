@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.codex.json",
+  "compilerOptions": { "noEmit": false, "rootDir": ".", "outDir": "codex-dist" },
+  "include": ["src/**/*.ts", "codex/**/*.ts"]
+}

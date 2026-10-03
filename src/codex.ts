@@ -154,9 +154,9 @@ function outputText(output: unknown): { text: string; error: boolean } {
 
 /** Tool calls with their outputs from a Codex rollout (JSONL), in call order; a call without an output is skipped. */
 export function parseRollout(jsonl: string): CodexCall[] {
-  const calls = new Map<string, Omit<CodexCall, 'output' | 'error'>>();
-  const done: CodexCall[] = [];
-  for (const line of jsonl.split('\n')) {
+  const calls = new Map<string, Omit<CodexCall, 'output' | 'error'> & { ordinal: number }>();
+  const done: Array<CodexCall & { ordinal: number }> = [];
+  for (const [ordinal, line] of jsonl.split('\n').entries()) {
     if (!line.includes('"response_item"')) continue;
     let p: Json;
     try {
@@ -178,14 +178,14 @@ export function parseRollout(jsonl: string): CodexCall[] {
           // keep the raw arguments in the label
         }
         const command = shellCommand(args['cmd'] ?? args['command']);
-        calls.set(id, command && /exec_command|shell/.test(name) ? { id, tool: 'Bash', command } : { id, tool: name, command: brief(`${name} ${String(p['arguments'] ?? '')}`, 400) });
+        calls.set(id, { ordinal, ...(command && /exec_command|shell/.test(name) ? { id, tool: 'Bash', command } : { id, tool: name, command: brief(`${name} ${String(p['arguments'] ?? '')}`, 400) }) });
         break;
       }
       case 'custom_tool_call':
-        calls.set(id, { id, ...(p['name'] === 'exec' ? scriptCall(String(p['input'] ?? '')) : { tool: String(p['name']), command: brief(String(p['input'] ?? ''), 400) }) });
+        calls.set(id, { id, ordinal, ...(p['name'] === 'exec' ? scriptCall(String(p['input'] ?? '')) : { tool: String(p['name']), command: brief(String(p['input'] ?? ''), 400) }) });
         break;
       case 'local_shell_call':
-        calls.set(id, { id, tool: 'Bash', command: shellCommand((p['action'] as Json | undefined)?.['command']) });
+        calls.set(id, { id, ordinal, tool: 'Bash', command: shellCommand((p['action'] as Json | undefined)?.['command']) });
         break;
       case 'function_call_output':
       case 'custom_tool_call_output':
@@ -199,7 +199,7 @@ export function parseRollout(jsonl: string): CodexCall[] {
       }
     }
   }
-  return done;
+  return done.sort((a, b) => a.ordinal - b.ordinal).map(({ ordinal, ...call }) => call);
 }
 
 /**
@@ -307,12 +307,13 @@ export interface Digest {
 /**
  * Context around each compaction in the rollout (JEV-CMP-23 H-C): `before` = the last request's input tokens before it,
  * `after` = the first request's after it (null for the one that just happened); `reads` = tool calls that open a saved
- * output of this hook (`fast-jev` + `cache` in the command). Logged so the budget can later follow the measured level.
+ * output of this hook (`fast-jev` + `cache` in the command). Missing measured usage stays null, not an estimated zero.
+ * Logged so the budget can later follow the measured level.
  */
-export function compactionStats(jsonl: string, calls: readonly CodexCall[]): { before: number[]; after: Array<number | null>; reads: number } {
-  const before: number[] = [];
+export function compactionStats(jsonl: string, calls: readonly CodexCall[]): { before: Array<number | null>; after: Array<number | null>; reads: number } {
+  const before: Array<number | null> = [];
   const after: Array<number | null> = [];
-  let last = 0;
+  let last: number | null = null;
   let waiting = false;
   for (const line of jsonl.split('\n')) {
     if (line.includes('"compacted"') && /"type"\s*:\s*"compacted"/.test(line)) {

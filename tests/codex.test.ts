@@ -6,6 +6,10 @@ import { expire, run } from '../codex/fact-sheet.js';
 import { budgetFor, buildDigest, callEntry, compactionStats, contextWindow, hybridLines, MAX_BUDGET, mdlLines, MIN_BUDGET, parseRollout, v4SheetSelector, type CodexCall } from '../src/codex.js';
 
 const item = (payload: object) => JSON.stringify({ type: 'response_item', payload });
+const C = (id: string) => ({ type: 'function_call', call_id: id, name: 'exec_command', arguments: '{"cmd":"git status"}' });
+const O = (id: string) => ({ type: 'function_call_output', call_id: id, output: 'ok' });
+const K = '{"type":"compacted","payload":{}}';
+const jsonl = (...payloads: object[]) => payloads.map(item).join('\n');
 const execWrap = (output: string, code = 0) => [
   { type: 'input_text', text: 'Script completed\nWall time 1.2 seconds\nOutput:\n' },
   { type: 'input_text', text: JSON.stringify({ chunk_id: 'a1', exit_code: code, output }) },
@@ -36,6 +40,30 @@ const rollout = [
 ].join('\n');
 
 describe('parseRollout', () => {
+  it('interleaved results preserve call order', () => {
+    expect(parseRollout(jsonl(C('a'), C('b'), O('b'), O('a'))).map((x) => x.id)).toEqual(['a', 'b']);
+  });
+  it('pending call is not a completed observation', () => {
+    expect(parseRollout(jsonl(C('a')))).toEqual([]);
+  });
+  it('malformed rollout line does not fabricate a call', () => {
+    expect(parseRollout('{not json\n' + jsonl(C('a'), O('a')))).toEqual([
+      { id: 'a', tool: 'Bash', command: 'git status', output: 'ok', error: false },
+    ]);
+  });
+  it('interleaved completed calls retain their order across repeated compactions and pending calls', () => {
+    const log = [jsonl(C('a'), C('pending'), C('b'), O('b')), K, jsonl(O('a')), K, jsonl(C('c'), O('c'))].join('\n');
+    expect(parseRollout(log)).toEqual(['a', 'b', 'c'].map((id) => ({ id, tool: 'Bash', command: 'git status', output: 'ok', error: false })));
+  });
+  it('custom and local shell calls also keep call order when outputs are interleaved', () => {
+    const log = jsonl(
+      { type: 'custom_tool_call', call_id: 'a', name: 'exec', input: 'text(await tools.exec_command({cmd:"git status"}));' },
+      { type: 'local_shell_call', call_id: 'b', action: { command: ['bash', '-lc', 'git status'] } },
+      { type: 'local_shell_call_output', call_id: 'b', output: 'ok' },
+      { type: 'custom_tool_call_output', call_id: 'a', output: 'ok' },
+    );
+    expect(parseRollout(log)).toEqual(['a', 'b'].map((id) => ({ id, tool: 'Bash', command: 'git status', output: 'ok', error: false })));
+  });
   const calls = parseRollout(rollout);
   it('pairs calls with outputs and skips a call without one', () => {
     expect(calls.map((c) => c.id)).toEqual(['c1', 'c2', 'c3', 'c4', 'c7']);
@@ -135,6 +163,15 @@ describe('line selectors', () => {
 
 describe('compactionStats', () => {
   const tok = (n: number) => JSON.stringify({ type: 'event_msg', payload: { type: 'token_count', info: { last_token_usage: { input_tokens: n } } } });
+  it('missing measured usage stays unknown', () => {
+    expect(compactionStats(K, [])).toEqual({ before: [null], after: [null], reads: 0 });
+  });
+  it('zero token-count reset events do not fabricate a measured usage', () => {
+    expect(compactionStats([tok(0), K, tok(0)].join('\n'), [])).toEqual({ before: [null], after: [null], reads: 0 });
+  });
+  it('repeated compactions keep unknown measurements separate from subsequent observed usage', () => {
+    expect(compactionStats([K, K, tok(0), tok(42), K, tok(51)].join('\n'), [])).toEqual({ before: [null, null, 42], after: [null, 42, 51], reads: 0 });
+  });
   it('reads the context before and after each compaction and counts reads of saved outputs', () => {
     const jsonl = [tok(600_000), tok(675_696), JSON.stringify({ type: 'compacted', payload: { message: '' } }), tok(0), tok(50_821), tok(90_000), tok(676_000), JSON.stringify({ type: 'compacted', payload: {} })].join('\n');
     const calls: CodexCall[] = [
