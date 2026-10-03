@@ -102,7 +102,8 @@ built-in compaction summary with the original messages.
 5. Questions are split into as many requests as needed so state plus questions
    stays under `maxRequestTokens` (30k by default, under Jev's 32k request
    limit). The same state (or the window's state) is resent with every request;
-   requests run concurrently and their answers are merged.
+   at most `maxConcurrentJevRequests` workers run concurrently (default 4), including
+   their retry pauses. Complete score pairs are merged in planned batch order.
 6. Decisions per call, against `keepThreshold`:
    - `keepResult ≥ threshold` → keep call and result;
    - else `keepCall ≥ threshold` → keep the call and reduce the result;
@@ -133,8 +134,11 @@ built-in compaction summary with the original messages.
    to keep are never touched. `stats.railTier` reports the strictest tier used (4 = the last resort).
    Untouched messages are returned as the same objects, and no result is ever left without its call.
 
-Jev failures, malformed answers or a missing key throw; the caller (or the
-Claude Code hook) decides what to fall back to.
+Malformed requested answers, a batch without any complete score pair, a round
+without fresh scores or a missing key throw; the caller (or the Claude Code hook)
+decides what to fall back to. With the default partial policy, validated complete
+pairs survive missing answers or terminal transport errors in other batches;
+unresolved original call/result pairs stay verbatim and are not cached.
 
 ## Install and usage
 
@@ -260,13 +264,42 @@ reuse is supported. Remove an old explicit `model: 'jev-latest'` when moving to 
 | `preserveRecentMessages` | `6` | Newest messages never touched (the first is always kept) |
 | `maxStateTokens` | `25000` | Estimated token ceiling for the state |
 | `maxRequestTokens` | `30000` | Estimated ceiling for state plus one batch of questions |
-| `compactionTimeoutMs` | `120000` | Deadline for all Jev batches and response bodies, in ms. The plugin accepts numbers ≥ 1000 and falls back to the built-in summary on timeout. `JevClient` aborts fetch when the transport supports AbortSignal; otherwise only the wait is bounded, without applying late answers. |
+| `compactionTimeoutMs` | `120000` | One deadline for all Jev batches, retries and response bodies, in ms. The plugin accepts numbers ≥ 1000. Accepted fresh pairs can survive the deadline under the partial policy; without them the round fails. Native fetch is aborted when supported; late responses cannot affect the snapshot or cache. |
+| `maxJevAttempts` | `3` | Total attempts per logical batch INCLUDING the first, integer `1..4`; `1` disables retries, not the deadline or concurrency limit |
+| `maxConcurrentJevRequests` | `4` | Integer `1..8`; a retry pause occupies the same worker slot |
+| `partialAnswers` | `retain-unscored` | Keep valid complete score pairs and retain unresolved original pairs; `rollback` rejects an incomplete fresh round |
+| `retrySleep` | cancelable native timer | Injectable backoff `(ms, {signal}) => Promise<void>`, separate from `deadlineSleep`; the hook supplies `$.clock.sleep` |
+| `nowMs` | `async () => Date.now()` | Injectable clock for absolute guards; the hook supplies `$.clock.now` |
 | `truncateHeadChars` | `200` | Characters of a reduced tool result's head kept before its fact lines |
 | `secrets` | `[]` (the API key in `compactMessages` and the hook) | Values masked exactly in everything sent to Jev, before the history is cut to fit |
 
 `result.stats` reports message and character counts before and after, the
 per-reason decision counts, the state size in estimated tokens, which fitting
-stage was needed, and the number of requests.
+stage was needed, and the number of planned requests (`stats.requests`). Only when
+Jev jobs are planned, the frozen `stats.jev` payload is present:
+`{completion, terminalCode, attempts, retries, parsed, scoredCalls, unscoredCalls}`.
+`completion` is `complete` or `partial`; `terminalCode` is `none`, `network`,
+`http_4xx`, `http_5xx`, `rate_limited`, `deadline`, `contract` or `unknown`.
+`attempts` counts actual sends and `retries` counts actual sends after the first;
+`parsed` counts validated responses, including partial ones. Scored plus unscored
+calls cover only calls in planned jobs, excluding cache, pinned, reduced and floor
+provenance. A failed round throws `JevRoundError` with safe `code`, frozen `counts`
+and optional `contractKind`, not a compaction result or raw transport data.
+
+Retries are core-only, deterministic waits of 1000/2000/4000 ms for at most four
+attempts. Only typed network failures and HTTP 429 or integer 500-599 are transient;
+JSON/envelope/answer failures, unknown exception messages and other statuses are
+not retried. `Retry-After` may lengthen a wait, but a server wait over 30000 ms is
+never shortened. A delay that cannot fit the remaining round budget stops without
+sleeping or sending again. Every attempt keeps the same state/questions and
+endpoint/model/key; there is no provider fallback. Invalid new options raise
+`RangeError` before I/O, without rounding fractions or treating zero as unlimited.
+
+Unscored decisions use internal retention constants, not Jev probabilities; their
+UI label is `unscored`. No half pair is merged with cache or a prior attempt.
+Fresh valid scores are published to the caller's mutable `knownAnswers` only after
+decisions/rails succeed. Late workers cannot change the frozen snapshot, cache or
+offload. The deadline covers Jev, not fitting, rails, offload or the summary path.
 
 ## Limitations
 

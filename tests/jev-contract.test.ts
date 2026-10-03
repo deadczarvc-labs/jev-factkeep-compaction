@@ -73,6 +73,8 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+async function flushMicrotasks(): Promise<void> { for (let i = 0; i < 40; i++) await Promise.resolve(); }
+
 function batchedSession(): { messages: Message[]; maxRequestTokens: number } {
   const messages = session();
   messages.splice(3, 0,
@@ -131,7 +133,7 @@ describe('P1-B — deadline lifecycle', () => {
     } };
     const pending = compact(session(), asker, roundOptions);
     if (outcome === 'success') await expect(pending).resolves.toHaveProperty('messages');
-    else await expect(pending).rejects.toThrow(outcome === 'request error' ? 'request failed' : 'Invalid Jev answer');
+    else await expect(pending).rejects.toThrow(outcome === 'request error' ? 'Jev round failed (unknown)' : 'Invalid Jev answer');
     expect(vi.getTimerCount()).toBe(0);
     expect(requestSignal).toBeDefined();
     expect(requestSignal?.aborted).toBe(outcome !== 'success');
@@ -165,6 +167,7 @@ describe('P1-B — deadline lifecycle', () => {
     const before = JSON.stringify(messages);
     const pending = compact(messages, asker, { ...roundOptions, maxRequestTokens, knownAnswers });
     const assertion = expect(pending).rejects.toThrow('Jev round timed out after 100 ms');
+    await flushMicrotasks();
     expect(signals).toHaveLength(2);
     expect(new Set(signals).size).toBe(1);
     expect(vi.getTimerCount()).toBe(1);
@@ -188,6 +191,7 @@ describe('P1-B — deadline lifecycle', () => {
     const asker: JevAsker = { ask(_s, q) { questions.push(q); return questions.length === 1 ? first.promise : second.promise; } };
     const assertion = expect(compact(messages, asker, { ...roundOptions, maxRequestTokens, knownAnswers }))
       .rejects.toThrow('Jev round timed out after 100 ms');
+    await flushMicrotasks();
     expect(questions).toHaveLength(2);
     await vi.advanceTimersByTimeAsync(100);
     await assertion;
@@ -202,7 +206,7 @@ describe('P1-B — deadline lifecycle', () => {
     expect(vi.getTimerCount()).toBe(0);
   });
 
-  it('cancels the other batch and discards partial answers on an early failure', async () => {
+  it('retains valid batch answers on a terminal unknown failure', async () => {
     vi.useFakeTimers();
     const { messages, maxRequestTokens } = batchedSession();
     const signals: AbortSignal[] = [];
@@ -212,10 +216,13 @@ describe('P1-B — deadline lifecycle', () => {
       if (signals.length === 2) throw new Error('batch failed');
       return validAnswers(q);
     } };
-    await expect(compact(messages, asker, { ...roundOptions, maxRequestTokens, knownAnswers })).rejects.toThrow('batch failed');
+    const result = await compact(messages, asker, { ...roundOptions, maxRequestTokens, knownAnswers });
+    expect(result.stats.jev).toEqual({ completion: 'partial', terminalCode: 'unknown', attempts: 2, retries: 0, parsed: 1, scoredCalls: 1, unscoredCalls: 1 });
     expect(signals).toHaveLength(2);
     expect(signals.every((signal) => signal.aborted)).toBe(true);
-    expect(knownAnswers.size).toBe(0);
+    expect([...knownAnswers]).toEqual([['r1', { keepCall: 0.1, keepResult: 0.1 }]]);
+    expect(result.messages[3]).toBe(messages[3]);
+    expect(result.messages[4]).toBe(messages[4]);
     expect(vi.getTimerCount()).toBe(0);
   });
 });
@@ -276,6 +283,7 @@ describe('P1-B — JevClient cancellation', () => {
     };
     const client = new JevClient({ apiKey: 'test', fetch: fetcher });
     const assertion = expect(compact(session(), client, roundOptions)).rejects.toThrow('Jev round timed out after 100 ms');
+    await flushMicrotasks();
     expect(requestSignal?.aborted).toBe(false);
     await vi.advanceTimersByTimeAsync(100);
     await assertion;

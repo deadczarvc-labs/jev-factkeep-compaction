@@ -60,7 +60,23 @@ export interface CallDecision extends CallAnswer {
   id: string;
   tool: string;
   action: CallAction;
-  reason: 'pinned' | 'kept' | 'result_dropped' | 'call_dropped';
+  reason: 'pinned' | 'kept' | 'result_dropped' | 'call_dropped' | 'unscored';
+}
+
+export type JevTerminalCode = 'none' | 'network' | 'http_4xx' | 'http_5xx' | 'rate_limited' | 'deadline' | 'contract' | 'unknown';
+
+/** Round-local counts; cached, pinned, reduced and state-budget floor calls are excluded. */
+export interface JevRoundCounts {
+  attempts: number;
+  retries: number;
+  parsed: number;
+  scoredCalls: number;
+  unscoredCalls: number;
+}
+
+export interface JevRoundStats extends JevRoundCounts {
+  completion: 'complete' | 'partial';
+  terminalCode: JevTerminalCode;
 }
 
 export interface HistoryToolCall {
@@ -107,6 +123,16 @@ export interface CompactOptions {
   compactionTimeoutMs?: number;
   /** Cancelable host timer; the hook supplies $.clock.sleep, the library uses a native timer. */
   deadlineSleep?: (ms: number, options: { signal: AbortSignal }) => Promise<void>;
+  /** Total attempts per logical batch, including the first. Integer 1..4; default 3. */
+  maxJevAttempts?: number;
+  /** Worker slots, including retry pauses. Integer 1..8; default 4. */
+  maxConcurrentJevRequests?: number;
+  /** Retain unresolved original pairs, or reject the entire fresh round. Default retain-unscored. */
+  partialAnswers?: 'retain-unscored' | 'rollback';
+  /** Cancelable backoff, separate from the round deadline timer. Defaults to a native timer. */
+  retrySleep?: (ms: number, options: { signal: AbortSignal }) => Promise<void>;
+  /** Clock for absolute round guards; the hook supplies $.clock.now. Defaults to Date.now. */
+  nowMs?: () => Promise<number>;
   /** Characters of a dropped tool result to retain. Default 300. */
   truncateHeadChars?: number;
   /**
@@ -133,6 +159,11 @@ export interface ResolvedCompactOptions {
   maxStateTokens: number;
   maxRequestTokens: number;
   compactionTimeoutMs: number;
+  maxJevAttempts: number;
+  maxConcurrentJevRequests: number;
+  partialAnswers: 'retain-unscored' | 'rollback';
+  retrySleep: NonNullable<CompactOptions['retrySleep']>;
+  nowMs: NonNullable<CompactOptions['nowMs']>;
   truncateHeadChars: number;
 }
 
@@ -154,6 +185,8 @@ export interface CompactResult {
     /** Which fitting stage the state needed, '' when no request was made. */
     stateStage: string;
     requests: number;
+    /** Present only for a planned Jev round. Actual sends and accepted complete pairs, not host application. */
+    jev?: Readonly<JevRoundStats>;
     ms: number;
     /** Rail tier used (0 = strictest); a higher tier gave up rails to clear the reduction floor. */
     railTier?: number;

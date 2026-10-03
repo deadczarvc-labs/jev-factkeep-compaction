@@ -234,7 +234,7 @@ describe('approved provider policy table', () => {
 
   it('provider 401 ⇒ no cross-provider fallback', async () => {
     const run = C({ provider: 'openrouter', allowThirdPartyEgress: true }, { OPENROUTER_API_KEY: KO, TYPESAFE_API_KEY: KT }, { status: 401, ok: false, text: 'denied' });
-    await expect(run.response).rejects.toThrow('Jev request failed (401): denied');
+    await expect(run.response).rejects.toThrow('Jev request failed (401)');
     expect(run.trace.map(({ url }) => url)).toEqual([O]);
   });
 

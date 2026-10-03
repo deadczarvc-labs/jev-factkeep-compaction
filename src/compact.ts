@@ -1,4 +1,4 @@
-import { noulAnswer } from './request.js';
+import { isRetryableJevError, JevConfigError, JevContractError, JevHttpError, JevNetworkError, JevRoundError, readBatchAnswers } from './request.js';
 import { redactForEgress, redactJson } from './secrets.js';
 import { collectToolCalls, estimateTokens, fitState, goalFromMessages, isPinned, safeSlice } from './state.js';
 import type {
@@ -9,6 +9,8 @@ import type {
   CompactionState,
   JevAsker,
   JevQuestions,
+  JevRoundStats,
+  JevTerminalCode,
   Message,
   ResolvedCompactOptions,
   ToolCall,
@@ -22,6 +24,11 @@ export const DEFAULT_OPTIONS: ResolvedCompactOptions = {
   maxStateTokens: 25_000,
   maxRequestTokens: 30_000,
   compactionTimeoutMs: 120_000,
+  maxJevAttempts: 3,
+  maxConcurrentJevRequests: 4,
+  partialAnswers: 'retain-unscored',
+  retrySleep: timerSleep,
+  nowMs: async () => Date.now(),
   truncateHeadChars: 200,
 };
 
@@ -32,7 +39,19 @@ function finite(value: number | undefined, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
 }
 
+function boundedInteger(value: number | undefined, fallback: number, maximum: number, name: string): number {
+  if (value === undefined) return fallback;
+  if (!Number.isInteger(value) || value < 1 || value > maximum) throw new RangeError(`${name} must be an integer from 1 to ${maximum}`);
+  return value;
+}
+
 export function resolveOptions(options: CompactOptions = {}): ResolvedCompactOptions {
+  if (options.partialAnswers !== undefined && options.partialAnswers !== 'retain-unscored' && options.partialAnswers !== 'rollback') {
+    throw new RangeError('partialAnswers must be retain-unscored or rollback');
+  }
+  for (const key of ['retrySleep', 'nowMs'] as const) {
+    if (options[key] !== undefined && typeof options[key] !== 'function') throw new RangeError(`${key} must be a function`);
+  }
   return {
     goal: options.goal ?? DEFAULT_OPTIONS.goal,
     keepThreshold: finite(options.keepThreshold, DEFAULT_OPTIONS.keepThreshold),
@@ -51,6 +70,11 @@ export function resolveOptions(options: CompactOptions = {}): ResolvedCompactOpt
       2_147_483_647,
       Math.max(1, Math.floor(finite(options.compactionTimeoutMs, DEFAULT_OPTIONS.compactionTimeoutMs))),
     ),
+    maxJevAttempts: boundedInteger(options.maxJevAttempts, DEFAULT_OPTIONS.maxJevAttempts, 4, 'maxJevAttempts'),
+    maxConcurrentJevRequests: boundedInteger(options.maxConcurrentJevRequests, DEFAULT_OPTIONS.maxConcurrentJevRequests, 8, 'maxConcurrentJevRequests'),
+    partialAnswers: options.partialAnswers ?? DEFAULT_OPTIONS.partialAnswers,
+    retrySleep: options.retrySleep ?? DEFAULT_OPTIONS.retrySleep,
+    nowMs: options.nowMs ?? DEFAULT_OPTIONS.nowMs,
     truncateHeadChars: Math.max(
       0,
       Math.floor(finite(options.truncateHeadChars, DEFAULT_OPTIONS.truncateHeadChars)),
@@ -120,26 +144,122 @@ export function decideCall(
   return { ...base, action: 'drop_call', reason: 'call_dropped' };
 }
 
-async function askBatch(
-  asker: JevAsker,
-  state: CompactionState,
-  batch: readonly ToolCall[],
-  signal: AbortSignal,
-): Promise<Map<string, CallAnswer>> {
-  const questions: JevQuestions = Object.assign({}, ...batch.map(questionsFor));
-  const { answers } = await asker.ask(state, questions, signal);
-  return new Map(
-    batch.map((call) => [
-      call.id,
-      {
-        keepCall: noulAnswer(answers, `call_${call.id}`),
-        keepResult: noulAnswer(answers, `result_${call.id}`),
-      },
-    ]),
-  );
+/** A logical batch keeps the same state and questions across every one-shot attempt. */
+export interface JevRoundJob { state: CompactionState; batch: readonly ToolCall[] }
+export interface JevRoundSnapshot {
+  answers: readonly ReadonlyMap<string, CallAnswer>[];
+  stats: Readonly<JevRoundStats>;
 }
 
-/** Native timers are available to the library, not the hook sandbox, which supplies deadlineSleep. */
+type Terminal = { code: Exclude<JevTerminalCode, 'none'>; detail?: JevHttpError | JevContractError | JevConfigError };
+const TERMINAL_PRECEDENCE: readonly JevTerminalCode[] = ['contract', 'deadline', 'http_4xx', 'rate_limited', 'http_5xx', 'network', 'unknown', 'none'];
+
+/** Classification never inspects an exception's message or copies its cause. */
+export function jevTerminalCode(error: unknown): Exclude<JevTerminalCode, 'none'> {
+  if (error instanceof JevContractError) return 'contract';
+  if (error instanceof JevNetworkError) return 'network';
+  if (error instanceof JevHttpError && Number.isInteger(error.status)) {
+    if (error.status === 429) return 'rate_limited';
+    if (error.status >= 400 && error.status <= 499) return 'http_4xx';
+    if (error.status >= 500 && error.status <= 599) return 'http_5xx';
+  }
+  return 'unknown';
+}
+
+export function jevRetryDelay(attempt: number, retryAfterMs = 0): number {
+  return Math.max(Math.min(30000, 1000 * 2 ** (attempt - 1)), retryAfterMs);
+}
+
+/** Runtime-immutable views: no set/delete/clear methods and no leaked mutable backing map. */
+class FrozenAnswers implements ReadonlyMap<string, CallAnswer> {
+  readonly #answers: Map<string, CallAnswer>;
+  constructor(answers: ReadonlyMap<string, CallAnswer>) {
+    this.#answers = new Map([...answers].map(([id, answer]) => [id, Object.freeze({ ...answer })]));
+    Object.freeze(this);
+  }
+  get size(): number { return this.#answers.size; }
+  get(key: string): CallAnswer | undefined { return this.#answers.get(key); }
+  has(key: string): boolean { return this.#answers.has(key); }
+  entries(): MapIterator<[string, CallAnswer]> { return this.#answers.entries(); }
+  keys(): MapIterator<string> { return this.#answers.keys(); }
+  values(): MapIterator<CallAnswer> { return this.#answers.values(); }
+  [Symbol.iterator](): MapIterator<[string, CallAnswer]> { return this.entries(); }
+  forEach(callback: (value: CallAnswer, key: string, map: ReadonlyMap<string, CallAnswer>) => void, thisArg?: unknown): void {
+    for (const [key, value] of this.#answers) callback.call(thisArg, value, key, this);
+  }
+}
+
+interface RoundContext {
+  options: ResolvedCompactOptions;
+  requests: AbortController;
+  expiresAt: number;
+  closed: boolean;
+  next: number;
+  attempts: number;
+  retries: number;
+  parsed: number;
+  answers: Map<string, CallAnswer>[];
+  terminals: (Terminal | undefined)[];
+  open(now: number): boolean;
+  finish(terminal?: Terminal): void;
+}
+
+function terminalFailure(error: unknown): Terminal {
+  return { code: jevTerminalCode(error), ...(error instanceof JevHttpError || error instanceof JevContractError || error instanceof JevConfigError ? { detail: error } : {}) };
+}
+
+function endJob(ctx: RoundContext, index: number, terminal: Terminal): void {
+  if (ctx.closed) return;
+  ctx.terminals[index] = terminal;
+  if (ctx.options.partialAnswers === 'rollback') ctx.finish(terminal);
+}
+
+async function askJobWithRetry(asker: JevAsker, job: JevRoundJob, index: number, ctx: RoundContext): Promise<void> {
+  const questions: JevQuestions = Object.assign({}, ...job.batch.map(questionsFor));
+  const { options, requests } = ctx;
+  for (let attempt = 1; attempt <= options.maxJevAttempts; attempt++) {
+    const sendAt = await options.nowMs();
+    // No await between the fresh guard, counting this actual send, and calling the one-shot adapter.
+    if (!ctx.open(sendAt)) return;
+    ctx.attempts++;
+    if (attempt > 1) ctx.retries++;
+    try {
+      const response = await asker.ask(job.state, questions, requests.signal);
+      const receivedAt = await options.nowMs();
+      if (!ctx.open(receivedAt)) return;
+      const parsed = readBatchAnswers(response, job.batch);
+      const ingestAt = await options.nowMs();
+      if (!ctx.open(ingestAt)) return;
+      ctx.parsed++;
+      ctx.answers[index] = parsed.scored;
+      if (parsed.missingCalls.length > 0 && options.partialAnswers === 'rollback') {
+        ctx.finish({ code: 'contract', detail: new JevContractError('incomplete_pair') });
+      }
+      return;
+    } catch (error) {
+      const failedAt = await options.nowMs();
+      if (!ctx.open(failedAt)) return;
+      const terminal = terminalFailure(error);
+      if (terminal.code === 'contract' || error instanceof JevConfigError) { ctx.finish(terminal); return; }
+      if (!isRetryableJevError(error, requests.signal) || attempt === options.maxJevAttempts) {
+        endJob(ctx, index, terminal); return;
+      }
+      const delay = jevRetryDelay(attempt, error instanceof JevHttpError ? error.retryAfterMs : undefined);
+      if (delay > 30000) { endJob(ctx, index, terminal); return; }
+      if (ctx.expiresAt - failedAt <= delay) { endJob(ctx, index, { code: 'deadline' }); return; }
+      try { await options.retrySleep(delay, { signal: requests.signal }); }
+      catch (sleepError) {
+        const rejectedAt = await options.nowMs();
+        if (ctx.open(rejectedAt)) endJob(ctx, index, terminalFailure(sleepError));
+        return;
+      }
+      const wokeAt = await options.nowMs();
+      if (!ctx.open(wokeAt)) return;
+    }
+  }
+}
+
+/** Native timers are available to the library, not the hook sandbox, which supplies deadlineSleep and retrySleep. */
 function timerSleep(ms: number, { signal }: { signal: AbortSignal }): Promise<void> {
   const clock = globalThis as unknown as {
     setTimeout: (callback: () => void, ms: number) => unknown;
@@ -160,32 +280,78 @@ function timerSleep(ms: number, { signal }: { signal: AbortSignal }): Promise<vo
   });
 }
 
-/** One deadline before any knownAnswers writes; late answers stay in askBatch's local maps. */
-async function askRound(
+/** One deadline, bounded workers and a detached immutable snapshot; never await a hanging worker on closure. */
+export async function runRoundJobs(
   asker: JevAsker,
-  jobs: readonly { state: CompactionState; batch: readonly ToolCall[] }[],
-  timeoutMs: number,
-  sleep: NonNullable<CompactOptions['deadlineSleep']> = timerSleep,
-): Promise<Map<string, CallAnswer>[]> {
-  if (jobs.length === 0) return [];
-  const timer = new AbortController();
-  const requests = new AbortController();
-  try {
-    const deadline = sleep(timeoutMs, { signal: timer.signal }).then(() => {
-      const error = new Error(`Jev round timed out after ${timeoutMs} ms`);
-      requests.abort(error);
-      throw error;
-    });
-    return await Promise.race([
-      Promise.all(jobs.map((job) => askBatch(asker, job.state, job.batch, requests.signal))),
-      deadline,
-    ]);
-  } catch (error) {
-    requests.abort(error);
-    throw error;
-  } finally {
-    timer.abort();
-  }
+  jobs: readonly JevRoundJob[],
+  options: CompactOptions = {},
+): Promise<JevRoundSnapshot> {
+  const resolved = resolveOptions(options);
+  const totalCalls = jobs.reduce((total, job) => total + job.batch.length, 0);
+  if (jobs.length === 0) return Object.freeze({ answers: Object.freeze([]), stats: Object.freeze({
+    completion: 'complete', terminalCode: 'none', attempts: 0, retries: 0, parsed: 0, scoredCalls: 0, unscoredCalls: 0,
+  }) });
+  const timer = new AbortController(), requests = new AbortController();
+  let resolve!: (snapshot: JevRoundSnapshot) => void, reject!: (error: JevRoundError) => void;
+  const returned = new Promise<JevRoundSnapshot>((yes, no) => { resolve = yes; reject = no; });
+  const ctx: RoundContext = {
+    options: resolved, requests, expiresAt: Number.POSITIVE_INFINITY, closed: false, next: 0, attempts: 0, retries: 0, parsed: 0,
+    answers: jobs.map(() => new Map()), terminals: jobs.map(() => undefined),
+    open(now) {
+      if (ctx.closed || requests.signal.aborted) return false;
+      if (!Number.isFinite(now)) { ctx.finish({ code: 'unknown' }); return false; }
+      if (now >= ctx.expiresAt) { ctx.finish({ code: 'deadline' }); return false; }
+      return true;
+    },
+    finish(forced) {
+      if (ctx.closed) return;
+      ctx.closed = true;
+      // Array iteration preserves job-index tie breaking, independently of response arrival order.
+      let terminal = forced;
+      const configFatal = forced?.detail instanceof JevConfigError;
+      if (!configFatal) for (const failure of ctx.terminals) {
+        if (failure && (!terminal || TERMINAL_PRECEDENCE.indexOf(failure.code) < TERMINAL_PRECEDENCE.indexOf(terminal.code))) terminal = failure;
+      }
+      const answers = Object.freeze(ctx.answers.map((map) => new FrozenAnswers(map)));
+      const scoredCalls = answers.reduce((sum, map) => sum + map.size, 0);
+      const counts = { attempts: ctx.attempts, retries: ctx.retries, parsed: ctx.parsed, scoredCalls, unscoredCalls: totalCalls - scoredCalls };
+      const code = terminal?.code ?? 'none';
+      const complete = scoredCalls === totalCalls && code === 'none';
+      const failed = configFatal || code === 'contract' || scoredCalls === 0 || (resolved.partialAnswers === 'rollback' && !complete);
+      const error = new JevRoundError(code === 'none' ? 'unknown' : code, counts, terminal?.detail, resolved.compactionTimeoutMs);
+      timer.abort();
+      if (failed || code !== 'none') requests.abort(error);
+      if (failed) { reject(error); return; }
+      resolve(Object.freeze({ answers, stats: Object.freeze({ completion: complete ? 'complete' : 'partial', terminalCode: code, ...counts }) }));
+    },
+  };
+  // Arm before the initial clock await/dequeue. An unresponsive host clock cannot extend the authoritative timer.
+  void (async () => {
+    try {
+      await (options.deadlineSleep ?? timerSleep)(resolved.compactionTimeoutMs, { signal: timer.signal });
+      ctx.finish({ code: 'deadline' });
+    } catch {
+      if (!ctx.closed) ctx.finish({ code: 'unknown' });
+    }
+  })();
+  const worker = async (): Promise<void> => {
+    while (!ctx.closed && ctx.next < jobs.length) {
+      const now = await resolved.nowMs();
+      if (!ctx.open(now) || ctx.next >= jobs.length) return;
+      // Reserving this index is synchronous; another worker cannot dequeue it during a clock await.
+      const index = ctx.next++;
+      await askJobWithRetry(asker, jobs[index]!, index, ctx);
+    }
+  };
+  const workers = (async () => {
+    const openedAt = await resolved.nowMs();
+    if (!ctx.open(openedAt)) return;
+    ctx.expiresAt = openedAt + resolved.compactionTimeoutMs;
+    await Promise.all(Array.from({ length: Math.min(jobs.length, resolved.maxConcurrentJevRequests) }, worker));
+  })();
+  // Observe success/rejection of every created worker even after the returned promise has settled.
+  void workers.then(() => ctx.finish(), () => { if (!ctx.closed) ctx.finish({ code: 'unknown' }); });
+  return returned;
 }
 
 function truncatedResultText(text: string, isError: boolean, headChars: number): string {
@@ -779,6 +945,9 @@ export async function compact(
 
   let fitted: { tokens: number; stage: string } = { tokens: 0, stage: '' };
   let requests = 0;
+  let jev: Readonly<JevRoundStats> | undefined;
+  const fresh = new Map<string, CallAnswer>();
+  const unscored = new Set<string>();
   const answers = new Map<string, CallAnswer>();
   for (const call of calls) {
     const answer = known?.get(call.tool_use_id);
@@ -789,17 +958,27 @@ export async function compact(
     fitted = { tokens: Math.max(0, ...groups.map((g) => g.state.tokens)), stage };
     const jobs = groups.flatMap((g) => batchCalls(g.calls, g.state.tokens, resolved).map((batch) => ({ state: g.state.state, batch })));
     requests = jobs.length;
-    const answered = await askRound(asker, jobs, resolved.compactionTimeoutMs, options.deadlineSleep);
-    for (const map of answered) for (const [id, answer] of map) answers.set(id, answer);
+    if (jobs.length > 0) {
+      const snapshot = await runRoundJobs(asker, jobs, { ...options, ...resolved });
+      jev = snapshot.stats;
+      for (const map of snapshot.answers) for (const [id, answer] of map) { answers.set(id, answer); fresh.set(id, answer); }
+      for (const job of jobs) for (const call of job.batch) if (!fresh.has(call.id)) unscored.add(call.id);
+    }
     // A call no window could fit gets the fact rails without Jev (its modal answer: drop the call, keep facts).
     for (const call of floor) answers.set(call.id, { keepCall: 0, keepResult: 0 });
-    if (known) for (const call of candidates) if (answers.has(call.id) && !floor.includes(call)) known.set(call.tool_use_id, answers.get(call.id)!);
   }
 
   const decisions = calls.map((call) =>
-    decideCall(call, answers.get(call.id) ?? (reduced.has(call.tool_use_id) ? { keepCall: 0, keepResult: 0 } : { keepCall: 1, keepResult: 1 }), resolved),
+    unscored.has(call.id)
+      ? { id: call.id, tool: call.tool, action: 'keep' as const, reason: 'unscored' as const, keepCall: 1, keepResult: 1 }
+      : decideCall(call, answers.get(call.id) ?? (reduced.has(call.tool_use_id) ? { keepCall: 0, keepResult: 0 } : { keepCall: 1, keepResult: 1 }), resolved),
   );
   const { messages: kept, tier: railTier } = applyWithRails(messages, decisions, calls, resolved.truncateHeadChars, options.minReduction);
+  // The caller's mutable valid-answer cache is published only after decisions/rails succeed, never by a worker.
+  if (known) for (const call of candidates) {
+    const answer = fresh.get(call.id);
+    if (answer) known.set(call.tool_use_id, { ...answer });
+  }
   return {
     messages: kept,
     decisions,
@@ -816,6 +995,7 @@ export async function compact(
       stateTokens: fitted.tokens,
       stateStage: fitted.stage,
       requests,
+      ...(jev === undefined ? {} : { jev }),
       ms: Date.now() - started,
       railTier,
     },

@@ -62,7 +62,7 @@ function jevFetch(answer: (name: string) => number, bodies: string[] = []) {
 
 describe('hook config', () => {
   it('reads raw transport values and applies compaction defaults', () => {
-    expect(resolveHookConfig({})).toEqual({ compactAtPercent: 60, minReductionRatio: 0.25, saveFullOutputs: true });
+    expect(resolveHookConfig({})).toEqual({ compactAtPercent: 60, minReductionRatio: 0.25, saveFullOutputs: true, maxJevAttempts: 3, maxConcurrentJevRequests: 4, partialAnswers: 'retain-unscored' });
     expect(
       resolveHookConfig({ apiKey: 'k', keepThreshold: 0.3, maxStateTokens: 1000, model: 'jev-x', goal: 'g', compactAtPercent: 'no' }),
     ).toEqual({
@@ -74,6 +74,9 @@ describe('hook config', () => {
       compactAtPercent: 60,
       minReductionRatio: 0.25,
       saveFullOutputs: true,
+      maxJevAttempts: 3,
+      maxConcurrentJevRequests: 4,
+      partialAnswers: 'retain-unscored',
     });
   });
 });
@@ -230,7 +233,7 @@ describe('compactSession', () => {
     // Fork: the dropped call t1 stays as a rebuilt fact stub (no handle) instead of disappearing.
     expect(messages.map((m) => m.handle)).toEqual(['h-0', undefined, undefined, 'h-tool-2', 'r-tool-2', 'h-5', 'h-6']);
     expect(messages[2]?.toolResults?.[0]?.text).toMatch(/fast-jev-compaction omitted \d+ chars/);
-    expect(summarize(output)).toMatch(/^\d+% reduction; 1 kept, 1 call_dropped; state ~\d+ tokens \(full\) in 1 request\(s\)$/);
+    expect(summarize(output)).toMatch(/^\d+% reduction; 1 kept, 1 call_dropped; state ~\d+ tokens \(full\) in 1 request\(s\); 1 attempt\(s\), 0 retry send\(s\), complete$/);
     expect(decisionLog(output)).toBe('t1:Read:drop_call/call=0.10/result=0.10 t2:Bash:keep/call=0.90/result=0.90');
     expect(decisionLogLines(output)).toEqual([`decisions: ${decisionLog(output)}`]);
   });
@@ -467,7 +470,7 @@ describe('register', () => {
         },
       },
       // A cancelable host timer like $.clock.sleep; existing scenarios use the real clock.
-      clock: { sleep: (ms: number, { signal }: { signal: AbortSignal }) => new Promise<void>((resolve, reject) => {
+      clock: { now: async () => Date.now(), sleep: (ms: number, { signal }: { signal: AbortSignal }) => new Promise<void>((resolve, reject) => {
         const done = () => { signal.removeEventListener('abort', cancel); resolve(); };
         const timer = setTimeout(done, ms);
         const cancel = () => { clearTimeout(timer); signal.removeEventListener('abort', cancel); reject(signal.reason); };
@@ -533,8 +536,8 @@ describe('register', () => {
     const next = vi.fn(async () => summary);
     const pending = load({ compactionTimeoutMs: 120_000 }).get('session.compact')!($, event, next);
     await clockStarted;
-    // The deadline is armed before fetch starts; let the request have its microtask.
-    await Promise.resolve();
+    // The deadline is armed before the awaited host clock/dequeue/send guards.
+    for (let i = 0; i < 40; i++) await Promise.resolve();
     expect(next).not.toHaveBeenCalled();
     expect($.http.fetch).toHaveBeenCalledOnce();
     expire();
@@ -680,6 +683,7 @@ describe('register', () => {
   });
 
   it('reads baseUrl from settings and never retries another endpoint on failure', async () => {
+    vi.useFakeTimers();
     const baseUrl = 'https://jev.example.test/v1/systemone';
     const { $, logs } = host({ pluginConfigs: { 'fast-jev-compaction@fast-jev-compaction': { options: { provider: 'custom', allowThirdPartyEgress: true, baseUrl } } } }, full);
     const requests: string[] = [];
@@ -693,8 +697,11 @@ describe('register', () => {
       summaries++;
       return { messages: [] };
     };
-    await load({ baseUrl: 'https://unused.example.test/v1/systemone' }).get('session.compact')!($, { trigger: 'auto', messages: transcript() }, next);
-    expect(requests).toEqual([baseUrl]);
+    const pending = load({ baseUrl: 'https://unused.example.test/v1/systemone' }).get('session.compact')!($, { trigger: 'auto', messages: transcript() }, next);
+    for (let i = 0; i < 40; i++) await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(3000);
+    await pending;
+    expect(requests).toEqual([baseUrl, baseUrl, baseUrl]);
     expect(summaries).toBe(1);
     expect(logs[0]).toContain('fallback to built-in summary (Jev request failed (503)');
   });

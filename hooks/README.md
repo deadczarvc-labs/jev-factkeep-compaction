@@ -61,6 +61,10 @@ The plugin declares these `userConfig` values in
 | `saveFullOutputs` | `true` |
 | `maxStateTokens` | `25000` |
 | `maxRequestTokens` | `30000` |
+| `compactionTimeoutMs` | `120000` (entire Jev round, including retries and bodies) |
+| `maxJevAttempts` | `3` (integer `1..4`, INCLUDING the first attempt per batch) |
+| `maxConcurrentJevRequests` | `4` (integer `1..8`, a retry pause holds its slot) |
+| `partialAnswers` | `retain-unscored` (`rollback` rejects any incomplete round) |
 | `truncateHeadChars` | `200` |
 | `model` | Runtime provider default: `jev-latest`, or Vercel's `typesafe-ai/jev` |
 
@@ -130,7 +134,9 @@ frozen per registration; changing provider/model/URL requires a plugin reload an
 reusing previous `knownAnswers`. The root README documents model forms and low-level builder limits.
 
 Compaction options are passed to the library; see the root README for what they
-do. The `session.compact` hook runs the Jev requests concurrently. If Jev fails,
+do. The `session.compact` hook runs bounded concurrent workers. Retries happen only
+in the library, not in the one-shot host adapter. Invalid explicitly supplied
+retry options raise `RangeError` before HTTP. If a Jev round yields no fresh complete pair,
 the response is malformed, the key is unavailable, the history cannot be
 fitted into the state budget, or the estimated reduction is below what the
 context window needs, the hook logs a fallback and delegates to Claude Code's
@@ -142,8 +148,9 @@ capped by the smallest context seen in the session and by 15% of the window: the
 char-based transcript estimate reads ~1.75× low, and the uncapped remainder once
 demanded a 42% cut where 5% sufficed (2026-10-02).
 `minReductionRatio` applies only when the usage figures are unavailable. The outcome is logged to the transcript with the
-reduction, per-reason counts, state size and request count; a per-call
-`decisions:` line with both probabilities is logged for diagnosis. If the
+reduction, per-reason counts, state size, planned requests and actual attempts;
+per-call `decisions:` lines are debug logs. Unresolved pairs are labeled
+`unscored`, without invented probabilities. If the
 built-in summary it fell back to then fails (an error, or Send now / Stop
 aborting it mid-way: it takes 1–3 minutes on a 1M window), the hook installs
 its own compaction instead when that freed anything, so the session never
@@ -167,6 +174,35 @@ Options are read from settings.json `pluginConfigs["fast-jev-compaction@…"].op
 too, laid over what the host passed: the desktop host was seen passing the
 defaults (`compactAtPercent` 60) while settings held 95. A difference is logged
 once as `options: compactAtPercent N from settings.json (the host passed M)`.
+
+### Retry and partial-answer boundary
+
+Only HTTP 429, integer HTTP 500-599 and confirmed typed network errors retry.
+For three total attempts, waits are 1000 then 2000 ms; four attempts add 4000 ms.
+`Retry-After` delta seconds or IMF-fixdate can lengthen a wait. A server wait over
+30000 ms is not shortened: that batch stops. A wait that cannot fit the remaining
+round budget stops with `deadline`, without sleeping or sending again.
+
+`retain-unscored` accepts only complete, strictly validated call/result score pairs.
+A missing half leaves the entire original pair untouched and uncached; invalid
+requested answers or a batch without any complete pair reject the whole fresh round.
+Completed neighbors can survive a terminal transport error or the round deadline,
+but still pass the existing pressure/reduction gate. `rollback` instead discards
+the fresh round on any missing pair, terminal failure or deadline. Existing cached
+answers are unchanged on failure. No late callback can populate the cache or trigger
+offload or a second return. Offload and summary are outside the Jev deadline.
+
+The hook passes response headers, `$.clock.sleep` for both separate timer paths and
+`$.clock.now` for absolute guards. The current SDK has no HTTP `signal` field or
+confirmed network-error discriminator: host exception messages are not classified
+as network failures, and physical cancellation of host HTTP is not promised.
+The native library passes AbortSignal and recognizes an explicit Node fetch cause-code
+allowlist. Neither adapter retries on its own or changes endpoint/model/key on retry.
+
+The pure `finalCompactionOutcome(result, needed, fallback)` adapter reports returned
+result/partial, summary, own fallback, or failure with `host_applied: null`.
+It does not write an audit log; cache membership and a hook return are not independent
+evidence that the host applied a transcript.
 
 ## Scope and caveat
 

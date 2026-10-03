@@ -54,8 +54,26 @@
     "compactionTimeoutMs": {
       "type": "number",
       "title": "Jev round deadline",
-      "description": "Maximum wait for all Jev batches in milliseconds (a number of at least 1000). A timeout falls back to the built-in summary; invalid values use 120000 ms.",
+      "description": "Maximum wait for the entire Jev round, including retries and bodies, in milliseconds (at least 1000). Already accepted pairs may be retained; without fresh pairs the hook falls back to the summary. Invalid values use 120000 ms.",
       "default": 120000
+    },
+    "maxJevAttempts": {
+      "type": "number",
+      "title": "Maximum attempts per Jev batch",
+      "description": "Total attempts INCLUDING the first, integer 1 to 4. Only typed network failures, 429 and 500-599 retry, within the existing round deadline; 1 disables retries.",
+      "default": 3
+    },
+    "maxConcurrentJevRequests": {
+      "type": "number",
+      "title": "Concurrent Jev workers",
+      "description": "Integer 1 to 8. Retry pauses occupy their worker slot, so pending batches cannot exceed this limit.",
+      "default": 4
+    },
+    "partialAnswers": {
+      "type": "string",
+      "title": "Partial Jev answers",
+      "description": "retain-unscored keeps validated complete pairs and retains unresolved original call/result pairs verbatim. rollback rejects the entire fresh round on missing pairs or a terminal failure. Invalid answers always reject the round.",
+      "default": "retain-unscored"
     },
     "maxStateTokens": {
       "type": "number",

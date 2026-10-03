@@ -11,7 +11,7 @@ import type {
 import { compact, fullOutputNote, RAIL_FLOOR, reductionRatio, resolveOptions } from '../src/compact.js';
 import { redactSecrets } from '../src/secrets.js';
 import { estimateTokens, safeSlice } from '../src/state.js';
-import { buildJevRequest, parseJevResponse } from '../src/request.js';
+import { buildJevRequest, JevConfigError, parseJevResponse } from '../src/request.js';
 import { requireJevApiKey, resolveJevEndpoint, selectJevApiKey, type JevProviderOptions, type ResolvedJevEndpoint } from '../src/providers.js';
 import type {
   CallAnswer,
@@ -41,6 +41,7 @@ export type HookFetchResponse = {
   status: number;
   ok: boolean;
   text: string;
+  headers?: Readonly<Record<string, string>>;
 };
 
 /** The shape of `$.http.fetch`, so the hook can be driven without an engine. */
@@ -96,8 +97,25 @@ export function resolveHookConfig(options: PluginOptions): HookConfig {
   if (typeof timeout === 'number' && Number.isFinite(timeout) && timeout >= 1000) {
     numbers.compactionTimeoutMs = timeout;
   }
+  const retryOptions: CompactOptions = {};
+  for (const key of ['maxJevAttempts', 'maxConcurrentJevRequests'] as const) {
+    const value = options[key];
+    if (value !== undefined) {
+      if (typeof value !== 'number') throw new RangeError(`${key} must be an integer`);
+      retryOptions[key] = value;
+    }
+  }
+  const partial = options.partialAnswers;
+  if (partial !== undefined) {
+    if (partial !== 'retain-unscored' && partial !== 'rollback') throw new RangeError('partialAnswers must be retain-unscored or rollback');
+    retryOptions.partialAnswers = partial;
+  }
+  const retries = resolveOptions(retryOptions);
   const config: HookConfig = {
     ...numbers,
+    maxJevAttempts: retries.maxJevAttempts,
+    maxConcurrentJevRequests: retries.maxConcurrentJevRequests,
+    partialAnswers: retries.partialAnswers,
     compactAtPercent: optionNumber(options, 'compactAtPercent', HOOK_DEFAULTS.compactAtPercent),
     minReductionRatio: optionNumber(
       options,
@@ -119,18 +137,27 @@ export function jevAsker(
   fetchFn: HookFetch,
   apiKey: string,
   endpoint: ResolvedJevEndpoint,
+  nowMs: NonNullable<CompactOptions['nowMs']> = async () => Date.now(),
 ): JevAsker {
   // Configuration errors trigger fallback even with no candidates or cached answers.
   requireJevApiKey(endpoint, apiKey);
   return {
-    async ask(state, questions) {
-      const request = buildJevRequest({ apiKey, model: endpoint.model, baseUrl: endpoint.baseUrl }, state, questions);
+    async ask(state, questions, signal) {
+      signal?.throwIfAborted();
+      const request = (() => {
+        try { return buildJevRequest({ apiKey, model: endpoint.model, baseUrl: endpoint.baseUrl }, state, questions); }
+        catch (error) { throw error instanceof JevConfigError ? error : new JevConfigError('request'); }
+      })();
       const response = await fetchFn(request.url, {
         method: request.method,
         headers: request.headers,
         body: request.body,
       });
-      return parseJevResponse(response.status, response.ok, response.text);
+      signal?.throwIfAborted();
+      const now = await nowMs();
+      signal?.throwIfAborted();
+      // The SDK buffers text and declares neither cancellation nor a network-error discriminator.
+      return parseJevResponse(response.status, response.ok, response.text, response.headers, now);
     },
   };
 }
@@ -219,6 +246,27 @@ export type Pressure = {
   gate: number;
 };
 
+export type CompactionFinalOutcome = Readonly<{
+  outcome: 'result-returned' | 'partial-returned' | 'fallback-returned' | 'own-returned' | 'failure';
+  host_applied: null;
+}>;
+
+/** Pure final-outcome seam for the audit writer. Returning a candidate is not independent host application evidence. */
+export function finalCompactionOutcome(
+  result: CompactResult | undefined,
+  needed: Pressure,
+  fallback: 'not-called' | 'returned' | 'failed',
+): CompactionFinalOutcome {
+  let outcome: CompactionFinalOutcome['outcome'] = 'failure';
+  if (fallback === 'returned') outcome = 'fallback-returned';
+  else if (result) {
+    const reduction = reductionRatio(result);
+    if (fallback === 'failed' && reduction > 0 && reduction < needed.gate) outcome = 'own-returned';
+    else if (fallback === 'not-called' && reduction >= needed.gate) outcome = result.stats.jev?.completion === 'partial' ? 'partial-returned' : 'result-returned';
+  }
+  return Object.freeze({ outcome, host_applied: null });
+}
+
 /**
  * How much a compaction must free: enough to bring the context back to `compactAtPercent − 10` of the window, and
  * accepted when it lands at or below `compactAtPercent − 5`. A fixed minimum (the old 30% rails floor, 25% gate) made
@@ -274,7 +322,7 @@ export async function compactSession(
   // Raw helpers and registered hooks share the same gate, even for empty or pinned-only history.
   const endpoint = runtimeEndpoints.get(config) ?? resolveJevEndpoint(config as JevProviderOptions);
   const apiKey = requireJevApiKey(endpoint, selectJevApiKey(endpoint, config.apiKey as string | undefined, {}));
-  const result = await compact(messages, jevAsker(fetchFn, apiKey, endpoint), {
+  const result = await compact(messages, jevAsker(fetchFn, apiKey, endpoint, config.nowMs), {
     ...config,
     secrets: [...(config.secrets ?? []), apiKey],
     knownAnswers,
@@ -410,13 +458,14 @@ export function summarize(result: CompactResult): string {
   const { stats } = result;
   const parts = [
     stats.kept > 0 ? `${stats.kept} kept` : '',
+    (stats.jev?.unscoredCalls ?? 0) > 0 ? `${stats.jev!.unscoredCalls} unscored` : '',
     stats.resultsDropped > 0 ? `${stats.resultsDropped} results truncated` : '',
     stats.callsDropped > 0 ? `${stats.callsDropped} call_dropped` : '',
     stats.pinned > 0 ? `${stats.pinned} pinned` : '',
   ].filter(Boolean);
   return `${percent(reductionRatio(result))} reduction; ${
     parts.join(', ') || 'no tool calls'
-  }; state ~${stats.stateTokens} tokens (${stats.stateStage}) in ${stats.requests} request(s)`;
+  }; state ~${stats.stateTokens} tokens (${stats.stateStage}) in ${stats.requests} request(s)${stats.jev ? `; ${stats.jev.attempts} attempt(s), ${stats.jev.retries} retry send(s), ${stats.jev.completion}` : ''}`;
 }
 
 const UI_LOG_MAX_CHARS = 4096;
@@ -426,7 +475,8 @@ export function decisionLog(result: CompactResult): string {
     .filter((d) => d.reason !== 'pinned')
     .map(
       (d) =>
-        `${d.id}:${d.tool}:${d.action}/call=${d.keepCall.toFixed(2)}/result=${d.keepResult.toFixed(2)}`,
+        d.reason === 'unscored' ? `${d.id}:${d.tool}:${d.action}/unscored` :
+          `${d.id}:${d.tool}:${d.action}/call=${d.keepCall.toFixed(2)}/result=${d.keepResult.toFixed(2)}`,
     )
     .join(' ');
 }
@@ -613,6 +663,8 @@ export const register: Register = (on: On, options: PluginOptions) => {
     // The plugin's own compaction when it fell short of the gate: installed if the built-in summary then fails, so a
     // summary aborted by Send now / Stop (or erroring) never leaves the session over the limit.
     let own: SessionMessage[] | undefined;
+    let candidate: CompactResult | undefined;
+    let needed: Pressure = { minReduction: RAIL_FLOOR, gate: configured.minReductionRatio };
     // A fallback still keeps every output: saved to files, and the summarizer is told where they are.
     const fallback = async (reason: string, settings: HookConfig) => {
       notify($, `fallback to built-in summary (${reason}); it takes 1–3 min, Send now or Stop aborts it`);
@@ -621,7 +673,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
       try {
         return await next(note ? { ...event, instructions: [event.instructions, note].filter(Boolean).join('\n\n') } : event);
       } catch (error) {
-        if (!own) throw error;
+        if (!own || finalCompactionOutcome(candidate, needed, 'failed').outcome !== 'own-returned') throw error;
         notify($, `kept ${own.length}/${event.messages.length} messages after the built-in summary failed (${errorText(error)})`);
         return { messages: own };
       }
@@ -632,25 +684,28 @@ export const register: Register = (on: On, options: PluginOptions) => {
       const config = await resolveRuntimeConfig($, {
         ...settings,
         deadlineSleep: (ms: number, options: { signal: AbortSignal }) => $.clock.sleep(ms, options),
+        retrySleep: (ms: number, options: { signal: AbortSignal }) => $.clock.sleep(ms, options),
+        nowMs: () => $.clock.now(),
       });
       const usage = await $.session.usage().then(
         (u) => u.context,
         () => undefined,
       );
-      const needed = pressure(usage, transcriptTokens(event.messages), config, lowest);
+      needed = pressure(usage, transcriptTokens(event.messages), config, lowest);
       const { result, messages } = await compactSession(
         event.messages,
         config,
         async (url, init) => {
           const response = await $.http.fetch(url, init);
-          return { status: response.status, ok: response.ok, text: response.text };
+          return { status: response.status, ok: response.ok, text: response.text, headers: response.headers };
         },
         needed.minReduction,
         config.saveFullOutputs ? await offloadTarget($) : undefined,
       );
+      candidate = result;
       // Per-call decisions are diagnosis, not news: debug log (and jev-watch), never the transcript.
       for (const line of decisionLogLines(result)) $.ui.log(line, { to: 'debug' });
-      if (reductionRatio(result) < needed.gate) {
+      if (finalCompactionOutcome(result, needed, 'not-called').outcome === 'failure') {
         if (reductionRatio(result) > 0) own = messages;
         // `return` without `await`: a failing fallback must not land in the catch below and run the summary twice.
         return fallback(

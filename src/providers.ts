@@ -1,4 +1,4 @@
-import { checkBaseUrl, DEFAULT_MODEL, SYSTEM_ONE_URL } from './request.js';
+import { checkBaseUrl, DEFAULT_MODEL, JevConfigError, SYSTEM_ONE_URL } from './request.js';
 
 export const OPENROUTER_SYSTEM_ONE_URL = 'https://openrouter.ai/api/v1/systemone';
 export const VERCEL_SYSTEM_ONE_URL = 'https://ai-gateway.vercel.sh/typesafe/v1/systemone';
@@ -89,7 +89,8 @@ export function selectJevApiKey(
 /** Missing keys fail before HTTP, with a safe provider-specific diagnostic. */
 export function requireJevApiKey(endpoint: ResolvedJevEndpoint, key: string | undefined): string {
   if (typeof key !== 'string' || key.length === 0) {
-    throw new Error(endpoint.keyEnv === null ? 'apiKey is required for custom provider' : `${endpoint.keyEnv} is not configured`);
+    // Typed so the round scheduler treats a missing key as config-fatal, never as a retryable failure.
+    throw new JevConfigError('api_key', endpoint.keyEnv === null ? 'apiKey is required for custom provider' : `${endpoint.keyEnv} is not configured`);
   }
   return key;
 }
