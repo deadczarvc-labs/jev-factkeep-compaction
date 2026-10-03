@@ -39,6 +39,12 @@
       "description": "Minimum estimated character reduction required to replace history when the context window's fill is unknown; otherwise the window decides.",
       "default": 0.25
     },
+    "compactionTimeoutMs": {
+      "type": "number",
+      "title": "Jev round deadline",
+      "description": "Maximum wait for all Jev batches in milliseconds (a number of at least 1000). A timeout falls back to the built-in summary; invalid values use 120000 ms.",
+      "default": 120000
+    },
     "maxStateTokens": {
       "type": "number",
       "title": "Maximum Jev state tokens",

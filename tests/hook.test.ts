@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   compactSession,
   forgetAnswers,
@@ -462,6 +462,14 @@ describe('register', () => {
           return compact ? compact() : { skip: 'none' };
         },
       },
+      // A cancelable host timer like $.clock.sleep; existing scenarios use the real clock.
+      clock: { sleep: (ms: number, { signal }: { signal: AbortSignal }) => new Promise<void>((resolve, reject) => {
+        const done = () => { signal.removeEventListener('abort', cancel); resolve(); };
+        const timer = setTimeout(done, ms);
+        const cancel = () => { clearTimeout(timer); signal.removeEventListener('abort', cancel); reject(signal.reason); };
+        signal.addEventListener('abort', cancel, { once: true });
+        if (signal.aborted) cancel();
+      }) },
       // t1 (the Read) dropped, t2 kept: a real reduction, far below a full window's gate
       http: { fetch: jevFetch((name) => (name === 'call_t2' || name === 'result_t2' ? 0.9 : 0.1)) },
     };
@@ -480,6 +488,109 @@ describe('register', () => {
   }
 
   const full = { tokens: 990_000, window: 1_000_000, percent: 99 };
+
+  afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
+
+  it('reads a finite compactionTimeoutMs of at least 1000, otherwise keeps the library default', () => {
+    expect(resolveHookConfig({ compactionTimeoutMs: 1000 }).compactionTimeoutMs).toBe(1000);
+    expect(resolveHookConfig({ compactionTimeoutMs: 2500 }).compactionTimeoutMs).toBe(2500);
+    for (const value of [0, -1, 999, NaN, Infinity, '120000']) {
+      expect(resolveHookConfig({ compactionTimeoutMs: value }).compactionTimeoutMs).toBeUndefined();
+    }
+  });
+
+  it.each(['auto', 'manual', 'plugin'])('uses the existing fallback on a %s deadline without native timers', async (trigger) => {
+    const { $, logs } = host({
+      pluginConfigs: { 'fast-jev-compaction@m': { options: { compactionTimeoutMs: 1700 } } },
+    }, full);
+    let expire!: () => void;
+    let started!: () => void;
+    const clockStarted = new Promise<void>((resolve) => { started = resolve; });
+    let timerSignal: AbortSignal | undefined;
+    $.clock.sleep = vi.fn((ms, { signal }) => {
+      expect(ms).toBe(1700);
+      timerSignal = signal;
+      started();
+      return new Promise<void>((resolve, reject) => {
+        expire = resolve;
+        signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+      });
+    });
+    let late!: () => void;
+    $.http.fetch = vi.fn(async (_url, init) => new Promise((resolve) => {
+      const { questions } = JSON.parse(init?.body ?? '{}');
+      late = () => resolve({ status: 200, ok: true, text: JSON.stringify({
+        answers: Object.fromEntries(Object.keys(questions).map((key) => [key, { noul: 0.1 }])),
+      }) });
+    }));
+    const nativeTimer = vi.spyOn(globalThis, 'setTimeout');
+    const event = { trigger, messages: transcript() };
+    const summary = { messages: [message('user', 'built-in summary')] };
+    const next = vi.fn(async () => summary);
+    const pending = load({ compactionTimeoutMs: 120_000 }).get('session.compact')!($, event, next);
+    await clockStarted;
+    // The deadline is armed before fetch starts; let the request have its microtask.
+    await Promise.resolve();
+    expect(next).not.toHaveBeenCalled();
+    expect($.http.fetch).toHaveBeenCalledOnce();
+    expire();
+    expect(await pending).toBe(summary);
+    expect(next).toHaveBeenCalledOnce();
+    expect(next).toHaveBeenCalledWith(event);
+    expect(timerSignal?.aborted).toBe(true);
+    expect(logs[0]).toMatch(/^fallback to built-in summary \(Jev round timed out after 1700 ms\)/);
+    expect(nativeTimer).not.toHaveBeenCalled();
+    late();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(next).toHaveBeenCalledOnce();
+    const retry = vi.fn(jevFetch(() => 0.1));
+    await compactSession(event.messages, { ...resolveHookConfig({ preserveRecentMessages: 1 }), apiKey: 'test' }, retry);
+    // The late answer did not populate knownAnswers: the retry asks Jev again.
+    expect(retry).toHaveBeenCalledOnce();
+  });
+
+  it.each([false, true])('cancels the host clock when the Jev round finishes (fails: %s)', async (fails) => {
+    const { $ } = host({}, full);
+    let timerSignal: AbortSignal | undefined;
+    $.clock.sleep = vi.fn((_ms, { signal }) => {
+      timerSignal = signal;
+      return new Promise<void>((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+    });
+    if (fails) $.http.fetch = async () => { throw new Error('host request failed'); };
+    const next = vi.fn(async () => ({ messages: [] }));
+    await load().get('session.compact')!($, { trigger: 'auto', messages: transcript() }, next);
+    expect($.clock.sleep).toHaveBeenCalledOnce();
+    expect(timerSignal?.aborted).toBe(true);
+  });
+
+  it('does not offload or remember late answers after compactSession times out', async () => {
+    vi.useFakeTimers();
+    let late!: () => void;
+    const fetchFn = vi.fn(async (_url: string, init?: { body?: string }) => new Promise<{ status: number; ok: boolean; text: string }>((resolve) => {
+      const { questions } = JSON.parse(init?.body ?? '{}');
+      late = () => resolve({ status: 200, ok: true, text: JSON.stringify({
+        answers: Object.fromEntries(Object.keys(questions).map((key) => [key, { noul: 0.1 }])),
+      }) });
+    }));
+    const write = vi.fn(async (_path: string, _text: string) => {});
+    const config = { ...resolveHookConfig({ preserveRecentMessages: 1 }), apiKey: 'test', compactionTimeoutMs: 100 };
+    const messages = transcript();
+    const before = JSON.stringify(messages);
+    const assertion = expect(compactSession(messages, config, fetchFn, undefined, { dir: 'C:/p/cache/s1', fs: { write } }))
+      .rejects.toThrow('Jev round timed out after 100 ms');
+    await vi.advanceTimersByTimeAsync(100);
+    await assertion;
+    expect(write).not.toHaveBeenCalled();
+    late();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(write).not.toHaveBeenCalled();
+    expect(JSON.stringify(messages)).toBe(before);
+    const retry = vi.fn(jevFetch(() => 0.1));
+    await compactSession(messages, config, retry);
+    expect(retry).toHaveBeenCalledOnce();
+    expect(vi.getTimerCount()).toBe(0);
+  });
 
   it('installs its own compaction when the built-in summary it fell back to fails', async () => {
     const { $, logs, debug, toasts } = host({}, full);

@@ -21,6 +21,7 @@ export const DEFAULT_OPTIONS: ResolvedCompactOptions = {
   preserveRecentMessages: 6,
   maxStateTokens: 25_000,
   maxRequestTokens: 30_000,
+  compactionTimeoutMs: 120_000,
   truncateHeadChars: 200,
 };
 
@@ -45,6 +46,10 @@ export function resolveOptions(options: CompactOptions = {}): ResolvedCompactOpt
     maxRequestTokens: Math.max(
       1,
       finite(options.maxRequestTokens, DEFAULT_OPTIONS.maxRequestTokens),
+    ),
+    compactionTimeoutMs: Math.min(
+      2_147_483_647,
+      Math.max(1, Math.floor(finite(options.compactionTimeoutMs, DEFAULT_OPTIONS.compactionTimeoutMs))),
     ),
     truncateHeadChars: Math.max(
       0,
@@ -119,9 +124,10 @@ async function askBatch(
   asker: JevAsker,
   state: CompactionState,
   batch: readonly ToolCall[],
+  signal: AbortSignal,
 ): Promise<Map<string, CallAnswer>> {
   const questions: JevQuestions = Object.assign({}, ...batch.map(questionsFor));
-  const { answers } = await asker.ask(state, questions);
+  const { answers } = await asker.ask(state, questions, signal);
   return new Map(
     batch.map((call) => [
       call.id,
@@ -131,6 +137,55 @@ async function askBatch(
       },
     ]),
   );
+}
+
+/** Native timers are available to the library, not the hook sandbox, which supplies deadlineSleep. */
+function timerSleep(ms: number, { signal }: { signal: AbortSignal }): Promise<void> {
+  const clock = globalThis as unknown as {
+    setTimeout: (callback: () => void, ms: number) => unknown;
+    clearTimeout: (timer: unknown) => void;
+  };
+  return new Promise((resolve, reject) => {
+    const cancel = () => {
+      clock.clearTimeout(timer);
+      signal.removeEventListener('abort', cancel);
+      reject(signal.reason);
+    };
+    const timer = clock.setTimeout(() => {
+      signal.removeEventListener('abort', cancel);
+      resolve();
+    }, ms);
+    signal.addEventListener('abort', cancel, { once: true });
+    if (signal.aborted) cancel();
+  });
+}
+
+/** One deadline before any knownAnswers writes; late answers stay in askBatch's local maps. */
+async function askRound(
+  asker: JevAsker,
+  jobs: readonly { state: CompactionState; batch: readonly ToolCall[] }[],
+  timeoutMs: number,
+  sleep: NonNullable<CompactOptions['deadlineSleep']> = timerSleep,
+): Promise<Map<string, CallAnswer>[]> {
+  if (jobs.length === 0) return [];
+  const timer = new AbortController();
+  const requests = new AbortController();
+  try {
+    const deadline = sleep(timeoutMs, { signal: timer.signal }).then(() => {
+      const error = new Error(`Jev round timed out after ${timeoutMs} ms`);
+      requests.abort(error);
+      throw error;
+    });
+    return await Promise.race([
+      Promise.all(jobs.map((job) => askBatch(asker, job.state, job.batch, requests.signal))),
+      deadline,
+    ]);
+  } catch (error) {
+    requests.abort(error);
+    throw error;
+  } finally {
+    timer.abort();
+  }
 }
 
 function truncatedResultText(text: string, isError: boolean, headChars: number): string {
@@ -734,7 +789,7 @@ export async function compact(
     fitted = { tokens: Math.max(0, ...groups.map((g) => g.state.tokens)), stage };
     const jobs = groups.flatMap((g) => batchCalls(g.calls, g.state.tokens, resolved).map((batch) => ({ state: g.state.state, batch })));
     requests = jobs.length;
-    const answered = await Promise.all(jobs.map((job) => askBatch(asker, job.state, job.batch)));
+    const answered = await askRound(asker, jobs, resolved.compactionTimeoutMs, options.deadlineSleep);
     for (const map of answered) for (const [id, answer] of map) answers.set(id, answer);
     // A call no window could fit gets the fact rails without Jev (its modal answer: drop the call, keep facts).
     for (const call of floor) answers.set(call.id, { keepCall: 0, keepResult: 0 });

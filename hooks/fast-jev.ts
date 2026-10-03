@@ -79,6 +79,10 @@ export function resolveHookConfig(options: PluginOptions): HookConfig {
     const value = options[key];
     if (typeof value === 'number' && Number.isFinite(value)) numbers[key] = value;
   }
+  const timeout = options.compactionTimeoutMs;
+  if (typeof timeout === 'number' && Number.isFinite(timeout) && timeout >= 1000) {
+    numbers.compactionTimeoutMs = timeout;
+  }
   const config: HookConfig = {
     ...numbers,
     compactAtPercent: optionNumber(options, 'compactAtPercent', HOOK_DEFAULTS.compactAtPercent),
@@ -592,7 +596,11 @@ export const register: Register = (on: On, options: PluginOptions) => {
     let settings = configured;
     try {
       settings = await (effective ??= readOptions($, options, configured));
-      const config = { ...settings, apiKey: await getApiKey($, settings) };
+      const config = {
+        ...settings,
+        apiKey: await getApiKey($, settings),
+        deadlineSleep: (ms: number, options: { signal: AbortSignal }) => $.clock.sleep(ms, options),
+      };
       const usage = await $.session.usage().then(
         (u) => u.context,
         () => undefined,

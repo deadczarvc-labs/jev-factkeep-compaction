@@ -203,6 +203,7 @@ the selected server receives the key and the masked conversation state. See [doc
 | `preserveRecentMessages` | `6` | Newest messages never touched (the first is always kept) |
 | `maxStateTokens` | `25000` | Estimated token ceiling for the state |
 | `maxRequestTokens` | `30000` | Estimated ceiling for state plus one batch of questions |
+| `compactionTimeoutMs` | `120000` | Deadline for all Jev batches and response bodies, in ms. The plugin accepts numbers ≥ 1000 and falls back to the built-in summary on timeout. `JevClient` aborts fetch when the transport supports AbortSignal; otherwise only the wait is bounded, without applying late answers. |
 | `truncateHeadChars` | `200` | Characters of a reduced tool result's head kept before its fact lines |
 | `secrets` | `[]` (the API key in `compactMessages` and the hook) | Values masked exactly in everything sent to Jev, before the history is cut to fit |
 

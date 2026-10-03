@@ -103,6 +103,10 @@ export interface CompactOptions {
   maxStateTokens?: number;
   /** Estimated token ceiling for state plus one batch of questions. Default 30000. */
   maxRequestTokens?: number;
+  /** Deadline for the entire Jev round, including all batches and response bodies. Default 120000 ms. */
+  compactionTimeoutMs?: number;
+  /** Cancelable host timer; the hook supplies $.clock.sleep, the library uses a native timer. */
+  deadlineSleep?: (ms: number, options: { signal: AbortSignal }) => Promise<void>;
   /** Characters of a dropped tool result to retain. Default 300. */
   truncateHeadChars?: number;
   /**
@@ -128,6 +132,7 @@ export interface ResolvedCompactOptions {
   preserveRecentMessages: number;
   maxStateTokens: number;
   maxRequestTokens: number;
+  compactionTimeoutMs: number;
   truncateHeadChars: number;
 }
 
@@ -215,5 +220,5 @@ export interface JevResponse {
 
 /** Anything that can answer Jev questions: `JevClient`, or a host-provided adapter. */
 export interface JevAsker {
-  ask(state: JevState, questions: JevQuestions): Promise<JevResponse>;
+  ask(state: JevState, questions: JevQuestions, signal?: AbortSignal): Promise<JevResponse>;
 }

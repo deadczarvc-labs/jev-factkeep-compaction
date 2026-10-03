@@ -27,7 +27,8 @@ export class JevClient implements JevAsker {
     this.fetcher = options.fetch ?? fetch;
   }
 
-  async ask(state: JevState, questions: JevQuestions): Promise<JevResponse> {
+  async ask(state: JevState, questions: JevQuestions, signal?: AbortSignal): Promise<JevResponse> {
+    signal?.throwIfAborted();
     if (!this.apiKey) throw new Error('TYPESAFE_API_KEY is not configured');
     const request = buildJevRequest(
       { apiKey: this.apiKey, model: this.model, baseUrl: this.baseUrl },
@@ -38,6 +39,7 @@ export class JevClient implements JevAsker {
       method: request.method,
       headers: request.headers,
       body: request.body,
+      ...(signal === undefined ? {} : { signal }),
     });
     return parseJevResponse(response.status, response.ok, await response.text());
   }
