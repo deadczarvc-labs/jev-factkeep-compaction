@@ -121,7 +121,8 @@ service's explicit key. Written `127.0.0.1`, `localhost` and `[::1]` authorities
 port, are loopback for HTTP or HTTPS; aliases are not. Named URLs must match their full endpoint exactly,
 with no trailing slash, port, query or fragment. The official SDK's prefix is not this plugin's full URL.
 
-The sensitive `apiKey` option takes precedence even when empty. Otherwise the hook makes one literal
+The host passes an unset string option as empty, so an empty `provider`, `baseUrl`, `model` or
+`apiKey` means unset. A non-empty sensitive `apiKey` takes precedence. Otherwise the hook makes one literal
 `$.env.get` call for the selected namespace, then reads only that namespace in `settings.env`.
 Invalid provider/model/URL/consent fails before key lookup, inside `session.compact`'s built-in fallback
 boundary, including on empty or pinned-only history; registration itself is not unloaded.

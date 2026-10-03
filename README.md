@@ -257,8 +257,9 @@ unless their written authority is `127.0.0.1`, `localhost` or `[::1]`, optionall
 Normalized aliases such as `127.1` are not trusted loopback. Non-loopback HTTP and userinfo are rejected.
 Custom mode is an escape hatch, not proof of API compatibility or a keyless backend.
 
-An explicit `apiKey` wins even when empty, suppressing ambient fallback; missing keys fail before
-HTTP (`JevClient` keeps this failure in `ask`, not construction). Arbitrary explicit token issuers
+An explicit `apiKey` wins even when empty in library calls, suppressing ambient fallback. The hook
+treats an empty string option as unset, because the host passes unset string options as empty.
+Missing keys fail before HTTP (`JevClient` keeps this failure in `ask`, not construction). Arbitrary explicit token issuers
 cannot be verified locally. Failed requests never switch provider, key or model. Native fetch uses
 `redirect: 'error'` and retains the round AbortSignal; an injected transport must honor these controls.
 The host's `$.http.fetch` has no declared redirect/cancellation control: third-party hook release
@@ -276,7 +277,7 @@ reuse is supported. Remove an old explicit `model: 'jev-latest'` when moving to 
 | --- | --- | --- |
 | `provider` | `typesafe` | `typesafe`, `openrouter`, `vercel` or `custom`; never inferred |
 | `allowThirdPartyEgress` | `false` | Literal boolean opt-in for third-party history transfer |
-| `apiKey` | Selected provider's namespace | Key for the selected service; explicit even if empty; custom has no ambient fallback |
+| `apiKey` | Selected provider's namespace | Key for the selected service; an empty value means unset; custom has no ambient fallback |
 | `model` | Provider-specific | `jev-latest`, except Vercel's `typesafe-ai/jev`; explicit values validated, never rewritten |
 | `baseUrl` | Provider-specific | Exact full named endpoint, or explicit custom URL; HTTPS or written loopback HTTP, no userinfo |
 | `fetch` | native `fetch` | Injectable fetch implementation for tests |

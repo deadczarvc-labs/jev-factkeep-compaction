@@ -27,7 +27,7 @@ import type {
 } from '../src/types.js';
 
 /** The running version, in every toast and log line (tests/hook.test.ts keeps it equal to plugin.json). */
-export const VERSION = '0.3.0-astra.27';
+export const VERSION = '0.3.0-astra.28';
 
 const HOOK_DEFAULTS = {
   compactAtPercent: 60,
@@ -138,7 +138,8 @@ export function resolveHookConfig(options: PluginOptions): HookConfig {
     ...(optionString(options, 'auditLauncherPath') ? { auditLauncherPath: optionString(options, 'auditLauncherPath') } : {}),
   };
   for (const key of ['provider', 'baseUrl', 'model', 'allowThirdPartyEgress', 'apiKey'] as const) {
-    if (Object.hasOwn(options, key)) config[key] = options[key];
+    // The host passes an unset string userConfig field as '' (live /compact probe, astra.27): here '' means unset.
+    if (Object.hasOwn(options, key) && options[key] !== '') config[key] = options[key];
   }
   const goal = optionString(options, 'goal');
   if (goal) config.goal = goal;

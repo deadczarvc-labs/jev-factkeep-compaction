@@ -50,7 +50,8 @@ are invalid. Consent permits sharing fitted history, goal and questions with the
 model provider; masking does not remove all private, personal or commercial information. It makes
 no no-training, zero-retention or free-service promise. Account/BYOK/fallback provisioning is not done.
 
-An explicit `apiKey` takes precedence even when empty. Otherwise library code reads only the selected
+An explicit `apiKey` takes precedence even when empty in library calls; the hook treats an empty
+option as unset, as the host sends it. Otherwise library code reads only the selected
 namespace, and the hook uses one literal `$.env.get` then only the same `settings.env` entry.
 Custom requires an explicit full compatible URL and key; no ambient namespace is available. Remote
 custom needs consent; only written loopback `127.0.0.1`, `localhost` or `[::1]`, optionally with a

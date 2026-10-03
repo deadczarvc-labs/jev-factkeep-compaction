@@ -132,7 +132,7 @@ describe('approved hook provider table', () => {
 describe('hook transport boundary regressions', () => {
   it('retains invalid raw fields until the session fallback boundary', async () => {
     for (const options of [
-      { provider: 'gateway' }, { allowThirdPartyEgress: 'true' }, { baseUrl: false }, { baseUrl: '' }, { model: false }, { model: '' },
+      { provider: 'gateway' }, { allowThirdPartyEgress: 'true' }, { baseUrl: false }, { model: false },
     ]) {
       const $ = host({ TYPESAFE_API_KEY: KT });
       const event = { trigger: 'manual', messages: [] };
@@ -146,11 +146,25 @@ describe('hook transport boundary regressions', () => {
     }
   });
 
-  it('explicit empty hook key suppresses both credential sources', async () => {
-    const run = H({ provider: 'openrouter', allowThirdPartyEgress: true, apiKey: '' }, { OPENROUTER_API_KEY: KO }, { OPENROUTER_API_KEY: KO });
-    await expect(run.result).rejects.toThrow('OPENROUTER_API_KEY is not configured');
-    expect(run.envTrace).toEqual([]);
-    expect(run.$.settings.read).not.toHaveBeenCalled();
+  it('an empty hook key is the host form of unset: the provider env key applies', async () => {
+    const run = H({ provider: 'openrouter', allowThirdPartyEgress: true, apiKey: '' }, { OPENROUTER_API_KEY: KO }, {});
+    expect((await run.result).apiKey).toBe(KO);
+    expect(run.envTrace).toEqual(['OPENROUTER_API_KEY']);
+  });
+
+  it('host-shaped options (every unset string field as empty) compact through the TypeSafe default', async () => {
+    const options = {
+      provider: 'typesafe', allowThirdPartyEgress: false, apiKey: '', baseUrl: '', model: '', auditLog: false,
+      auditNodePath: '', auditLauncherPath: '', compactAtPercent: 75, saveFullOutputs: false, preserveRecentMessages: 1,
+      minReductionRatio: 0,
+    };
+    const $ = Object.assign(host({ TYPESAFE_API_KEY: KT }), { plugin: { root: 'C:/fixture/plugin' } });
+    Object.assign($.clock, { now: vi.fn(async () => 0) });
+    const next = vi.fn(async () => ({ messages: [] }));
+    const result = await load(options)($, { trigger: 'manual', messages: transcript() }, next) as { messages: unknown[] };
+    expect(next, JSON.stringify($.ui.log.mock.calls)).not.toHaveBeenCalled();
+    expect(result.messages.length).toBeGreaterThan(0);
+    expect($.http.fetch.mock.calls.map(([url]) => url)).toEqual([T]);
   });
 
   it('custom never reads an ambient hook credential', async () => {

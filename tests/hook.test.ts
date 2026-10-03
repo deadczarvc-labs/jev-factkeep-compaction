@@ -133,13 +133,13 @@ describe('base URL', () => {
     expect(requests.map((request) => request.url)).toEqual(['https://api.typesafe.ai/v1/systemone']);
   });
 
-  it('retains empty and non-string baseUrl options for runtime rejection', async () => {
+  it('treats an empty baseUrl from the host as unset and retains non-string values for runtime rejection', async () => {
     const requests: Request[] = [];
-    expect(resolveHookConfig({ baseUrl: '' }).baseUrl).toBe('');
+    expect(resolveHookConfig({ baseUrl: '' }).baseUrl).toBeUndefined();
     expect(resolveHookConfig({ baseUrl: false }).baseUrl).toBe(false);
-    await expect(compactSession([], resolveHookConfig({ apiKey: 'k', baseUrl: '' }), captureRequests(requests))).rejects.toThrow(invalidUrlError);
-    await expect(compactSession([], resolveHookConfig({ apiKey: 'k', baseUrl: false }), captureRequests(requests))).rejects.toThrow('baseUrl must be a string');
-    expect(requests).toEqual([]);
+    await compactSession(transcript(), resolveHookConfig({ apiKey: 'k', baseUrl: '', preserveRecentMessages: 1 }), captureRequests(requests));
+    expect(requests.map((request) => request.url)).toEqual(['https://api.typesafe.ai/v1/systemone']);
+    await expect(compactSession([], resolveHookConfig({ apiKey: 'k', baseUrl: false }), captureRequests([]))).rejects.toThrow('baseUrl must be a string');
   });
 
   it('rejects userinfo, deceptive hosts, invalid URLs and other schemes before fetch', async () => {
