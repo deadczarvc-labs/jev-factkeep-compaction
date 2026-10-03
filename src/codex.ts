@@ -1,5 +1,6 @@
 import { deflateRawSync } from 'node:zlib';
 import { factLines, reproducible } from './compact.js';
+import { safeSlice } from './state.js';
 import { tokenValues, toks, type ValueContext, valueLines } from './value-select.js';
 
 /** Picks the lines of `text` worth keeping within `budget` chars, in text order. */
@@ -16,12 +17,16 @@ export function mdlLines(text: string, budget: number): string[] {
   const chunks: Array<{ s: string; at: number }> = [];
   let at = 0;
   for (const line of text.split('\n')) {
-    for (let k = 0; k < Math.max(1, line.length); k += 200) chunks.push({ s: line.slice(k, k + 200), at: at + k });
+    for (let k = 0; k < Math.max(1, line.length); ) {
+      const s = safeSlice(line, k, k + 200);
+      chunks.push({ s, at: at + k });
+      k += Math.max(1, s.length);
+    }
     at += line.length + 1;
   }
   const scored = chunks.map((c, i) => {
     if (c.s.replace(/\s/g, '').length < 4) return { i, c, score: 0 };
-    const dict = Buffer.from(text.slice(Math.max(0, c.at - 32_768), c.at));
+    const dict = Buffer.from(safeSlice(text, Math.max(0, c.at - 32_768), c.at));
     const z = deflateRawSync(Buffer.from(c.s), dict.length ? { dictionary: dict } : {}).length;
     return { i, c, score: z / (c.s.length + 16) };
   });
@@ -80,7 +85,7 @@ function jsString(literal: string): string {
 
 function brief(text: string, max: number): string {
   const one = text.replace(/\s+/g, ' ').trim();
-  return one.length > max ? `${one.slice(0, max)}…` : one;
+  return one.length > max ? `${safeSlice(one, 0, max)}…` : one;
 }
 
 function shellCommand(command: unknown): string {
@@ -281,10 +286,10 @@ export function callEntry(call: CodexCall, savedAt?: string, tier: Tier = 1, sel
   if (tier === 2) return `${head} — ${call.output.length} chars; ${where}`;
   const read = !call.error && call.tool === 'Bash' && reproducible('Bash', { command: psReads(call.command), original: call.command });
   if (read) return `${head} — a read (${call.output.length} chars), re-run to see it; ${where}`;
-  const error = call.error || ERROR_MARK.test(call.output.slice(-600));
+  const error = call.error || ERROR_MARK.test(safeSlice(call.output, -600));
   const budget = Math.min(error ? 2400 : 1200, Math.max(300, Math.floor(call.output.length * 0.1)));
   const facts = select(call.output, budget);
-  const tail = error ? call.output.slice(-300).trim() : '';
+  const tail = error ? safeSlice(call.output, -300).trim() : '';
   return `${head} — ${call.output.length} chars, ${facts.length} fact line(s) kept; ${where}\n${indent([...facts, ...(tail && !facts.some((f) => tail.includes(f)) ? ['…', tail] : [])].join('\n'))}`;
 }
 

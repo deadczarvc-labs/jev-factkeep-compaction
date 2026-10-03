@@ -1,6 +1,6 @@
 import { noulAnswer } from './request.js';
 import { redactForEgress, redactJson } from './secrets.js';
-import { collectToolCalls, estimateTokens, fitState, goalFromMessages, isPinned } from './state.js';
+import { collectToolCalls, estimateTokens, fitState, goalFromMessages, isPinned, safeSlice } from './state.js';
 import type {
   CallAnswer,
   CallDecision,
@@ -135,8 +135,9 @@ async function askBatch(
 
 function truncatedResultText(text: string, isError: boolean, headChars: number): string {
   if (text.length <= headChars + 120) return text;
-  const head = headChars > 0 ? `${text.slice(0, headChars)}\n` : '';
-  return `${head}[fast-jev-compaction truncated ${text.length - headChars} chars of this tool result${
+  const kept = headChars > 0 ? safeSlice(text, 0, headChars) : '';
+  const head = kept ? `${kept}\n` : '';
+  return `${head}[fast-jev-compaction truncated ${text.length - kept.length} chars of this tool result${
     isError ? ' (error)' : ''
   }; re-run the tool if needed]`;
 }
@@ -171,11 +172,12 @@ export function pieces(line: string): string[] {
   for (let rest of line.split('\\n')) {
     rest = rest.trim();
     while (rest.length > FACT_LINE_CHARS) {
-      const window = rest.slice(0, FACT_LINE_CHARS);
+      const window = safeSlice(rest, 0, FACT_LINE_CHARS);
       const cut = Math.max(window.lastIndexOf(', '), window.lastIndexOf('; '), window.lastIndexOf(' | '), window.lastIndexOf(' '));
       const end = cut > FACT_LINE_CHARS / 2 ? cut + 1 : FACT_LINE_CHARS;
-      out.push(rest.slice(0, end).trim());
-      rest = rest.slice(end).trim();
+      const piece = safeSlice(rest, 0, end);
+      out.push(piece.trim());
+      rest = safeSlice(rest, piece.length).trim();
     }
     if (rest) out.push(rest);
   }
@@ -253,11 +255,13 @@ export function factStubText(text: string, isError: boolean, headChars: number, 
   const tailNl = text.indexOf('\n', text.length - TAIL_CHARS);
   const tailStart = tailNl === -1 || tailNl >= text.length - 1 ? text.length - TAIL_CHARS : tailNl + 1;
   if (text.length <= rails.denseKeep && factLines(text, Number.MAX_SAFE_INTEGER).reduce((n, l) => n + l.length + 1, 0) >= text.length * rails.denseShare) return text;
-  const facts = select(text.slice(headEnd, tailStart), Math.max(factBudget, Math.floor(text.length * rails.share)));
+  const head = safeSlice(text, 0, headEnd);
+  const tail = safeSlice(text, tailStart);
+  const facts = select(safeSlice(text, head.length, text.length - tail.length), Math.max(factBudget, Math.floor(text.length * rails.share)));
   const where = id ? fullOutputNote(id) : 'the full output stays in the session transcript';
-  return `${text.slice(0, headEnd)}\n[fast-jev-compaction omitted ${tailStart - headEnd} chars of this tool result${isError ? ' (error)' : ''}${
+  return `${head}\n[fast-jev-compaction omitted ${text.length - head.length - tail.length} chars of this tool result${isError ? ' (error)' : ''}${
     facts.length ? `; kept its ${facts.length} fact line(s)` : ''
-  }; ${where}]\n${facts.length ? `${facts.join('\n')}\n…\n` : ''}${text.slice(tailStart)}`;
+  }; ${where}]\n${facts.length ? `${facts.join('\n')}\n…\n` : ''}${tail}`;
 }
 
 // The upstream goal (README "What and why", step 4): drop what re-running the tool would give back. So a
@@ -316,7 +320,11 @@ function rerunNote(text: string, id: string): string {
 
 /** String fields of a stubbed call's input cut to `max` chars: the call stays readable, not verbatim. */
 export function briefInput(input: unknown, max: number): unknown {
-  if (typeof input === 'string') return input.length > max ? `${input.slice(0, max)}…[${input.length - max} chars]` : input;
+  if (typeof input === 'string') {
+    if (!(input.length > max)) return input;
+    const kept = safeSlice(input, 0, max);
+    return `${kept}…[${input.length - kept.length} chars]`;
+  }
   if (Array.isArray(input)) return input.map((item) => briefInput(item, max));
   if (input && typeof input === 'object') {
     return Object.fromEntries(Object.entries(input as Record<string, unknown>).map(([k, v]) => [k, briefInput(v, max)]));
