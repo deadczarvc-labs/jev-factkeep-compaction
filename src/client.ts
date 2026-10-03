@@ -1,37 +1,31 @@
-import { buildJevRequest, checkBaseUrl, parseJevResponse, SYSTEM_ONE_URL } from './request.js';
+import { buildJevRequest, parseJevResponse } from './request.js';
+import { requireJevApiKey, resolveJevEndpoint, selectJevApiKey, type JevProviderOptions, type ResolvedJevEndpoint } from './providers.js';
 import type { JevAsker, JevQuestions, JevResponse, JevState } from './types.js';
 
-export interface JevClientOptions {
-  /** Defaults to `process.env.TYPESAFE_API_KEY`. */
+export interface JevClientOptions extends JevProviderOptions {
+  /** The selected service's key, otherwise its own namespace; custom has no ambient key. */
   apiKey?: string;
-  /** Defaults to `jev-latest`. */
-  model?: string;
-  /** Defaults to the System One endpoint. */
-  baseUrl?: string;
-  /** Defaults to the global `fetch`. */
+  /** Defaults to global fetch; injected transports must honor redirect and abort policy. */
   fetch?: typeof fetch;
 }
 
-/** Asks Jev over HTTP with the global `fetch` (or an injected one). */
+/** Asks Jev through one explicitly resolved System One transport. */
 export class JevClient implements JevAsker {
-  private readonly apiKey: string;
-  private readonly model: string | undefined;
-  private readonly baseUrl: string | undefined;
+  private readonly apiKey: string | undefined;
+  private readonly endpoint: ResolvedJevEndpoint;
   private readonly fetcher: typeof fetch;
 
   constructor(options: JevClientOptions = {}) {
-    checkBaseUrl(options.baseUrl ?? SYSTEM_ONE_URL);
-    this.apiKey = options.apiKey ?? process.env.TYPESAFE_API_KEY ?? '';
-    this.model = options.model;
-    this.baseUrl = options.baseUrl;
+    this.endpoint = resolveJevEndpoint(options);
+    this.apiKey = selectJevApiKey(this.endpoint, options.apiKey, process.env);
     this.fetcher = options.fetch ?? fetch;
   }
 
   async ask(state: JevState, questions: JevQuestions, signal?: AbortSignal): Promise<JevResponse> {
     signal?.throwIfAborted();
-    if (!this.apiKey) throw new Error('TYPESAFE_API_KEY is not configured');
+    const apiKey = requireJevApiKey(this.endpoint, this.apiKey);
     const request = buildJevRequest(
-      { apiKey: this.apiKey, model: this.model, baseUrl: this.baseUrl },
+      { apiKey, model: this.endpoint.model, baseUrl: this.endpoint.baseUrl },
       state,
       questions,
     );
@@ -39,6 +33,7 @@ export class JevClient implements JevAsker {
       method: request.method,
       headers: request.headers,
       body: request.body,
+      redirect: 'error',
       ...(signal === undefined ? {} : { signal }),
     });
     return parseJevResponse(response.status, response.ok, await response.text());

@@ -11,7 +11,8 @@ import type {
 import { compact, fullOutputNote, RAIL_FLOOR, reductionRatio, resolveOptions } from '../src/compact.js';
 import { redactSecrets } from '../src/secrets.js';
 import { estimateTokens, safeSlice } from '../src/state.js';
-import { buildJevRequest, checkBaseUrl, DEFAULT_MODEL, parseJevResponse, SYSTEM_ONE_URL } from '../src/request.js';
+import { buildJevRequest, parseJevResponse } from '../src/request.js';
+import { requireJevApiKey, resolveJevEndpoint, selectJevApiKey, type JevProviderOptions, type ResolvedJevEndpoint } from '../src/providers.js';
 import type {
   CallAnswer,
   CompactOptions,
@@ -28,7 +29,6 @@ export const VERSION = '0.3.0-astra.26';
 const HOOK_DEFAULTS = {
   compactAtPercent: 60,
   minReductionRatio: 0.25,
-  model: DEFAULT_MODEL,
 };
 
 export type HookFetchInit = {
@@ -47,14 +47,27 @@ export type HookFetchResponse = {
 export type HookFetch = (url: string, init?: HookFetchInit) => Promise<HookFetchResponse>;
 
 export type HookConfig = CompactOptions & {
-  apiKey?: string;
-  baseUrl?: string;
+  /** Raw transport values survive the plugin boundary until runtime validation inside the fallback guard. */
+  apiKey?: unknown;
+  provider?: unknown;
+  baseUrl?: unknown;
+  model?: unknown;
+  allowThirdPartyEgress?: unknown;
   compactAtPercent: number;
   minReductionRatio: number;
-  model: string;
   /** Save the full output of every reduced result under `<cwd>/.claude/fast-jev/<session>/`. Default true. */
   saveFullOutputs: boolean;
 };
+
+export type ResolvedHookConfig = Readonly<
+  Omit<HookConfig, keyof JevProviderOptions | 'apiKey'> & ResolvedJevEndpoint & {
+    apiKey: string;
+    allowThirdPartyEgress: boolean;
+  }
+>;
+
+// Only validated, immutable runtime snapshots reuse their resolved tuple.
+const runtimeEndpoints = new WeakMap<HookConfig, ResolvedJevEndpoint>();
 
 function optionNumber(options: PluginOptions, key: string, fallback: number): number {
   const value = options[key];
@@ -66,7 +79,7 @@ function optionString(options: PluginOptions, key: string): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
-/** Reads the plugin's `userConfig` values; anything missing takes the defaults. */
+/** Snapshot plugin options, applying only compaction defaults; transport defaults belong to its provider. */
 export function resolveHookConfig(options: PluginOptions): HookConfig {
   const numbers: Partial<Omit<CompactOptions, 'goal'>> = {};
   for (const key of [
@@ -91,30 +104,27 @@ export function resolveHookConfig(options: PluginOptions): HookConfig {
       'minReductionRatio',
       HOOK_DEFAULTS.minReductionRatio,
     ),
-    model: optionString(options, 'model') ?? HOOK_DEFAULTS.model,
     saveFullOutputs: options.saveFullOutputs !== false,
   };
-  const apiKey = optionString(options, 'apiKey');
-  if (apiKey) config.apiKey = apiKey;
-  const baseUrl = optionString(options, 'baseUrl');
-  if (baseUrl) config.baseUrl = baseUrl;
+  for (const key of ['provider', 'baseUrl', 'model', 'allowThirdPartyEgress', 'apiKey'] as const) {
+    if (Object.hasOwn(options, key)) config[key] = options[key];
+  }
   const goal = optionString(options, 'goal');
   if (goal) config.goal = goal;
-  return config;
+  return Object.freeze(config);
 }
 
 /** A `JevAsker` over the engine's `$.http.fetch`. */
 export function jevAsker(
   fetchFn: HookFetch,
   apiKey: string,
-  model: string,
-  baseUrl?: string,
+  endpoint: ResolvedJevEndpoint,
 ): JevAsker {
   // Configuration errors trigger fallback even with no candidates or cached answers.
-  checkBaseUrl(baseUrl ?? SYSTEM_ONE_URL);
+  requireJevApiKey(endpoint, apiKey);
   return {
     async ask(state, questions) {
-      const request = buildJevRequest({ apiKey, model, baseUrl }, state, questions);
+      const request = buildJevRequest({ apiKey, model: endpoint.model, baseUrl: endpoint.baseUrl }, state, questions);
       const response = await fetchFn(request.url, {
         method: request.method,
         headers: request.headers,
@@ -261,10 +271,12 @@ export async function compactSession(
   minReduction?: number,
   offload?: { dir: string; fs: OffloadFs },
 ): Promise<SessionCompaction> {
-  if (!config.apiKey) throw new Error('TYPESAFE_API_KEY is not configured');
-  const result = await compact(messages, jevAsker(fetchFn, config.apiKey, config.model, config.baseUrl), {
+  // Raw helpers and registered hooks share the same gate, even for empty or pinned-only history.
+  const endpoint = runtimeEndpoints.get(config) ?? resolveJevEndpoint(config as JevProviderOptions);
+  const apiKey = requireJevApiKey(endpoint, selectJevApiKey(endpoint, config.apiKey as string | undefined, {}));
+  const result = await compact(messages, jevAsker(fetchFn, apiKey, endpoint), {
     ...config,
-    secrets: [config.apiKey],
+    secrets: [...(config.secrets ?? []), apiKey],
     knownAnswers,
     ...(minReduction === undefined ? {} : { minReduction }),
   });
@@ -442,23 +454,43 @@ export function decisionLogLines(
   );
 }
 
+type HookKeySource = {
+  env: { get: (name: string) => Promise<string | undefined> };
+  settings: { read: () => Promise<Readonly<Record<string, unknown>>> };
+};
+
 async function getApiKey(
-  $: {
-    env: { get: (name: string) => Promise<string | undefined> };
-    settings: { read: () => Promise<Readonly<Record<string, unknown>>> };
-  },
+  $: HookKeySource,
   config: HookConfig,
+  endpoint: ResolvedJevEndpoint,
 ): Promise<string | undefined> {
-  if (config.apiKey) return config.apiKey;
-  const fromEnv = await $.env.get('TYPESAFE_API_KEY');
+  // Validate an explicit value without reading any ambient credential; empty is still explicit.
+  const explicit = selectJevApiKey(endpoint, config.apiKey as string | undefined, {});
+  if (explicit !== undefined || endpoint.keyEnv === null) return explicit;
+  let fromEnv: string | undefined;
+  switch (endpoint.keyEnv) {
+    case 'TYPESAFE_API_KEY': fromEnv = await $.env.get('TYPESAFE_API_KEY'); break;
+    case 'OPENROUTER_API_KEY': fromEnv = await $.env.get('OPENROUTER_API_KEY'); break;
+    case 'AI_GATEWAY_API_KEY': fromEnv = await $.env.get('AI_GATEWAY_API_KEY'); break;
+  }
   if (fromEnv) return fromEnv;
   const settings = await $.settings.read();
   const env = settings['env'];
   if (env && typeof env === 'object') {
-    const value = (env as Record<string, unknown>)['TYPESAFE_API_KEY'];
+    const value = (env as Record<string, unknown>)[endpoint.keyEnv];
     if (typeof value === 'string' && value) return value;
   }
   return undefined;
+}
+
+/** Resolve the final merged options before any literal credential read. Call inside session.compact's try. */
+export async function resolveRuntimeConfig($: HookKeySource, config: HookConfig): Promise<ResolvedHookConfig> {
+  // The raw plugin boundary is intentionally unknown; the shared resolver validates every transport field.
+  const endpoint = resolveJevEndpoint(config as JevProviderOptions);
+  const apiKey = requireJevApiKey(endpoint, await getApiKey($, config, endpoint));
+  const resolved = Object.freeze({ ...config, ...endpoint, allowThirdPartyEgress: config.allowThirdPartyEgress === true, apiKey });
+  runtimeEndpoints.set(resolved, endpoint);
+  return resolved;
 }
 
 function notify(
@@ -562,7 +594,8 @@ function fillText(usage: WindowUsage | undefined): string {
 }
 
 export const register: Register = (on: On, options: PluginOptions) => {
-  const configured = resolveHookConfig(options);
+  const rawOptions = Object.freeze({ ...options });
+  const configured = resolveHookConfig(rawOptions);
   let compacting = false;
   // Set once $.session.compact said the host has no between-turn compaction (SDK / desktop): the engine's own
   // threshold compacts there, and asking again every turn only filled the transcript (300+ lines in 10 sessions).
@@ -595,12 +628,11 @@ export const register: Register = (on: On, options: PluginOptions) => {
     };
     let settings = configured;
     try {
-      settings = await (effective ??= readOptions($, options, configured));
-      const config = {
+      settings = await (effective ??= readOptions($, rawOptions, configured));
+      const config = await resolveRuntimeConfig($, {
         ...settings,
-        apiKey: await getApiKey($, settings),
         deadlineSleep: (ms: number, options: { signal: AbortSignal }) => $.clock.sleep(ms, options),
-      };
+      });
       const usage = await $.session.usage().then(
         (u) => u.context,
         () => undefined,
@@ -645,7 +677,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
     let fill: WindowUsage | undefined;
     let threshold = configured.compactAtPercent;
     try {
-      threshold = (await (effective ??= readOptions($, options, configured))).compactAtPercent;
+      threshold = (await (effective ??= readOptions($, rawOptions, configured))).compactAtPercent;
       const { context } = await $.session.usage();
       fill = context;
       seen(context.tokens ?? undefined);

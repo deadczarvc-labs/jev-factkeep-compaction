@@ -61,8 +61,8 @@ function jevFetch(answer: (name: string) => number, bodies: string[] = []) {
 }
 
 describe('hook config', () => {
-  it('reads userConfig values and falls back to defaults', () => {
-    expect(resolveHookConfig({})).toEqual({ compactAtPercent: 60, minReductionRatio: 0.25, model: 'jev-latest', saveFullOutputs: true });
+  it('reads raw transport values and applies compaction defaults', () => {
+    expect(resolveHookConfig({})).toEqual({ compactAtPercent: 60, minReductionRatio: 0.25, saveFullOutputs: true });
     expect(
       resolveHookConfig({ apiKey: 'k', keepThreshold: 0.3, maxStateTokens: 1000, model: 'jev-x', goal: 'g', compactAtPercent: 'no' }),
     ).toEqual({
@@ -93,7 +93,7 @@ describe('base URL', () => {
 
   it('baseUrl option reaches the request', async () => {
     const baseUrl = 'https://jev.example.test/decisions?tenant=local';
-    const config = resolveHookConfig({ apiKey: 'k', baseUrl, preserveRecentMessages: 1 });
+    const config = resolveHookConfig({ apiKey: 'k', provider: 'custom', allowThirdPartyEgress: true, baseUrl, preserveRecentMessages: 1 });
     const requests: Request[] = [];
     expect(config.baseUrl).toBe(baseUrl);
     const output = await compactSession(transcript(), config, captureRequests(requests));
@@ -115,7 +115,7 @@ describe('base URL', () => {
     const endpoints = ['127.0.0.1', 'localhost', '[::1]'].map((host) => `http://${host}:8321/v1/systemone`);
     for (const baseUrl of endpoints) {
       forgetAnswers();
-      await compactSession(transcript(), resolveHookConfig({ apiKey: 'k', baseUrl, preserveRecentMessages: 1 }), captureRequests(requests));
+      await compactSession(transcript(), resolveHookConfig({ apiKey: 'k', provider: 'custom', baseUrl, preserveRecentMessages: 1 }), captureRequests(requests));
     }
     expect(requests.map((request) => request.url)).toEqual(endpoints);
     expect(requests.every((request) => request.init?.headers?.authorization === 'Bearer k')).toBe(true);
@@ -129,9 +129,13 @@ describe('base URL', () => {
     expect(requests.map((request) => request.url)).toEqual(['https://api.typesafe.ai/v1/systemone']);
   });
 
-  it('leaves empty or non-string baseUrl options unset', () => {
-    expect(resolveHookConfig({ baseUrl: '' }).baseUrl).toBeUndefined();
-    expect(resolveHookConfig({ baseUrl: false }).baseUrl).toBeUndefined();
+  it('retains empty and non-string baseUrl options for runtime rejection', async () => {
+    const requests: Request[] = [];
+    expect(resolveHookConfig({ baseUrl: '' }).baseUrl).toBe('');
+    expect(resolveHookConfig({ baseUrl: false }).baseUrl).toBe(false);
+    await expect(compactSession([], resolveHookConfig({ apiKey: 'k', baseUrl: '' }), captureRequests(requests))).rejects.toThrow(invalidUrlError);
+    await expect(compactSession([], resolveHookConfig({ apiKey: 'k', baseUrl: false }), captureRequests(requests))).rejects.toThrow('baseUrl must be a string');
+    expect(requests).toEqual([]);
   });
 
   it('rejects userinfo, deceptive hosts, invalid URLs and other schemes before fetch', async () => {
@@ -677,7 +681,7 @@ describe('register', () => {
 
   it('reads baseUrl from settings and never retries another endpoint on failure', async () => {
     const baseUrl = 'https://jev.example.test/v1/systemone';
-    const { $, logs } = host({ pluginConfigs: { 'fast-jev-compaction@fast-jev-compaction': { options: { baseUrl } } } }, full);
+    const { $, logs } = host({ pluginConfigs: { 'fast-jev-compaction@fast-jev-compaction': { options: { provider: 'custom', allowThirdPartyEgress: true, baseUrl } } } }, full);
     const requests: string[] = [];
     $.http.fetch = async (url, init) => {
       requests.push(url);

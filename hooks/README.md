@@ -3,7 +3,7 @@
 This plugin uses Claude Code function hooks to replace a compaction with the
 original messages, minus the tool calls and tool results Jev judged no longer
 needed. `hooks/fast-jev.ts` is a thin adapter: it reads the plugin options,
-finds the TypeSafe key, hands `session.compact` transcripts to the
+resolves the selected provider and its own key, hands `session.compact` transcripts to the
 `fast-jev-compaction` library in `src/` (the plugin folder is the repository
 root, so the hook imports it directly) and maps the result back onto session
 messages. User and assistant text is never touched. Jev is sent the whole
@@ -50,6 +50,10 @@ The plugin declares these `userConfig` values in
 
 | Option | Default |
 | --- | ---: |
+| `provider` | `typesafe` |
+| `allowThirdPartyEgress` | `false` |
+| `apiKey` | Selected provider's namespace; custom requires an explicit key |
+| `baseUrl` | Exact full endpoint for the selected provider; custom requires an explicit URL |
 | `keepThreshold` | `0.5` |
 | `preserveRecentMessages` | `6` |
 | `compactAtPercent` | `60` |
@@ -58,14 +62,74 @@ The plugin declares these `userConfig` values in
 | `maxStateTokens` | `25000` |
 | `maxRequestTokens` | `30000` |
 | `truncateHeadChars` | `200` |
-| `model` | `jev-latest` |
+| `model` | Runtime provider default: `jev-latest`, or Vercel's `typesafe-ai/jev` |
 
-The TypeSafe key can be supplied as the sensitive `apiKey` plugin option or
-through `TYPESAFE_API_KEY`. The environment variable is the recommended
-development setup.
+| Provider | Full endpoint | Default model | Only key namespace | Consent |
+| --- | --- | --- | --- | --- |
+| `typesafe` | `https://api.typesafe.ai/v1/systemone` | `jev-latest` | `TYPESAFE_API_KEY` | Existing default |
+| `openrouter` | `https://openrouter.ai/api/v1/systemone` | `jev-latest` | `OPENROUTER_API_KEY` | Required |
+| `vercel` | `https://ai-gateway.vercel.sh/typesafe/v1/systemone` | `typesafe-ai/jev` | `AI_GATEWAY_API_KEY` | Required |
+| `custom` | Explicit compatible System One URL | `jev-latest` | No ambient namespace; explicit `apiKey` only | Required except for written loopback |
 
-Every option except `apiKey`, `compactAtPercent`, `minReductionRatio` and
-`model` is passed straight to the library; see the root README for what they
+> OpenRouter and Vercel AI Gateway are disabled by default. `provider` together with
+> `allowThirdPartyEgress: true` permits sending fitted history, goal and questions to an additional
+> third party and its model-serving provider. Secret redaction does not remove all confidential data.
+> Do not enable this for history that cannot be shared with the selected service; use its separate key.
+> No no-training, zero-retention or free-service guarantee is made. There is no automatic recipient or
+> credential switch. `baseUrl` is a full endpoint, not an SDK prefix.
+
+Provider options (settings.json plugin `options`):
+
+```json
+{}
+```
+
+The default above uses only `TYPESAFE_API_KEY`. To explicitly disable third-party routes, also remove
+any foreign URL/key and use:
+
+```json
+{ "provider": "typesafe", "allowThirdPartyEgress": false }
+```
+
+```json
+{ "provider": "openrouter", "allowThirdPartyEgress": true }
+```
+
+The OpenRouter example reads only `OPENROUTER_API_KEY`.
+
+```json
+{ "provider": "vercel", "allowThirdPartyEgress": true }
+```
+
+The Gateway example reads only `AI_GATEWAY_API_KEY`; omit `model` or set `typesafe-ai/jev`.
+An old explicit `jev-latest` is rejected, not silently replaced.
+
+```json
+{ "provider": "custom", "baseUrl": "http://127.0.0.1:8321/v1/systemone", "apiKey": "<local proxy key>" }
+```
+
+Custom configurations must provide their own explicit key; ambient keys are ignored. Migrate existing
+remote URL configurations by adding `provider: 'custom'`, `allowThirdPartyEgress: true` and their
+service's explicit key. Written `127.0.0.1`, `localhost` and `[::1]` authorities, optionally with a
+port, are loopback for HTTP or HTTPS; aliases are not. Named URLs must match their full endpoint exactly,
+with no trailing slash, port, query or fragment. The official SDK's prefix is not this plugin's full URL.
+
+The sensitive `apiKey` option takes precedence even when empty. Otherwise the hook makes one literal
+`$.env.get` call for the selected namespace, then reads only that namespace in `settings.env`.
+Invalid provider/model/URL/consent fails before key lookup, inside `session.compact`'s built-in fallback
+boundary, including on empty or pinned-only history; registration itself is not unloaded.
+
+The host declarations expose neither a redirect policy nor HTTP cancellation. Before a third-party
+hook release, a separate real-host known-positive and redirect-negative confinement probe is required.
+It has not been performed; keep third-party hook routes disabled unless that release gate is satisfied.
+Library native fetch, not the host, has verified `redirect: 'error'` and AbortSignal behavior. No native
+Gateway `/v1/evaluate` or `/v4/ai/evaluation-model` adapter is included.
+
+Transport configuration is validated after the final host/settings merge. The effective snapshot is
+frozen per registration; changing provider/model/URL requires a plugin reload and cache reset, not
+reusing previous `knownAnswers`. The root README documents model forms and low-level builder limits.
+
+Compaction options are passed to the library; see the root README for what they
 do. The `session.compact` hook runs the Jev requests concurrently. If Jev fails,
 the response is malformed, the key is unavailable, the history cannot be
 fitted into the state budget, or the estimated reduction is below what the

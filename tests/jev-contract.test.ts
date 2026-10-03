@@ -243,7 +243,7 @@ describe('P1-B — JevClient cancellation', () => {
     });
     try {
       const { port } = server.address() as AddressInfo;
-      const client = new JevClient({ apiKey: 'test', baseUrl: `http://127.0.0.1:${port}/systemone` });
+      const client = new JevClient({ apiKey: 'test', provider: 'custom', baseUrl: `http://127.0.0.1:${port}/systemone` });
       let signal: AbortSignal | undefined;
       const asker: JevAsker = { async ask(state, questions, roundSignal) {
         signal = roundSignal;

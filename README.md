@@ -173,30 +173,87 @@ method) and call `compact(messages, asker, options)`; `buildJevRequest` and
 The building blocks (`collectToolCalls`, `fitState`, `batchCalls`,
 `decideCall`, `applyDecisions`) are exported too.
 
-`apiKey` defaults to `process.env.TYPESAFE_API_KEY`. Never commit the key or
+`apiKey` defaults to the selected provider's own environment namespace (TypeSafe by default).
+Custom endpoints require an explicit key. Never commit the key or
 put it in a source file.
 
 ### Jev endpoint and its API key
 
-`baseUrl` sets one full System One-compatible endpoint in both the library and the Claude Code
-plugin; the path is used as given, without a suffix. Leave it unset to keep
-`https://api.typesafe.ai/v1/systemone`. The API key is sent only to the configured endpoint:
-there is no automatic provider selection or cross-provider key fallback. For another service,
-set `apiKey` to that service's key, not an unrelated `TYPESAFE_API_KEY`.
+The library and Claude Code plugin share one explicit provider policy and the same System One
+builder/parser. `provider` defaults to `typesafe`; neither key presence, a token prefix nor a URL
+selects another provider. `allowThirdPartyEgress` defaults to `false`; only literal boolean `true`
+permits a third-party destination, before any credential lookup or HTTP.
 
-An absolute `https://` URL with any host is allowed; `http://` is allowed only on `127.0.0.1`,
-`localhost` or `[::1]` (with or without a port). Userinfo is not allowed. An invalid endpoint
-is rejected before the request; the hook falls back to the built-in summary, just as when the
-key is missing. HTTPS protects the transport but does not make the endpoint's owner trusted:
-the selected server receives the key and the masked conversation state. See [docs/security.md](docs/security.md).
+| Provider | Full endpoint | Default model | Only ambient key | Third-party consent |
+| --- | --- | --- | --- | --- |
+| `typesafe` | `https://api.typesafe.ai/v1/systemone` | `jev-latest` | `TYPESAFE_API_KEY` | Not required for the existing default |
+| `openrouter` | `https://openrouter.ai/api/v1/systemone` | `jev-latest` | `OPENROUTER_API_KEY` | Required |
+| `vercel` | `https://ai-gateway.vercel.sh/typesafe/v1/systemone` | `typesafe-ai/jev` | `AI_GATEWAY_API_KEY` | Required |
+| `custom` | Explicit full System One-compatible URL | `jev-latest` | None; explicit `apiKey` only | Required except for explicit loopback |
+
+> OpenRouter and Vercel AI Gateway are disabled by default. Selecting `provider` together with
+> `allowThirdPartyEgress: true` permits sending fitted history, goal and questions to an additional
+> third party and its model-serving provider. Secret redaction does not remove all confidential data.
+> Do not enable this for history that cannot be shared with the selected service; use its separate key.
+> No no-training, zero-retention or free-service guarantee is made. There is no automatic recipient or
+> credential switch. `baseUrl` is a full endpoint here, not an SDK prefix.
+
+```ts
+// TypeSafe default, unaffected by ambient OpenRouter/Gateway keys.
+await compactMessages(transcript, {});
+
+// Explicitly keep third-party routes off; also remove any foreign baseUrl/apiKey.
+await compactMessages(transcript, { provider: 'typesafe', allowThirdPartyEgress: false });
+
+// Requires OPENROUTER_API_KEY; compatible System One, not chat/completions or alpha Decisions.
+await compactMessages(transcript, { provider: 'openrouter', allowThirdPartyEgress: true });
+
+// Requires AI_GATEWAY_API_KEY; noul request/response, not the native evaluation API.
+await compactMessages(transcript, { provider: 'vercel', allowThirdPartyEgress: true });
+
+// Explicit local proxy and its own key: no ambient key, no remote consent required.
+await compactMessages(transcript, {
+  provider: 'custom', baseUrl: 'http://127.0.0.1:8321/v1/systemone',
+  apiKey: process.env.LOCAL_JEV_API_KEY,
+});
+```
+
+Named providers accept only an absent `baseUrl` or their exact endpoint above: SDK prefixes,
+alternate paths, ports, query/fragment additions and trailing slashes are rejected, not normalized.
+For example, the official SDK appends `/v1/systemone` to `https://openrouter.ai/api`; this builder
+appends nothing. Explicit models are preserved: TypeSafe accepts `jev-*`; OpenRouter also accepts
+`typesafe/jev-*` and `~typesafe/jev-latest`; Vercel accepts only `typesafe-ai/jev`. All models must be
+nonempty, at most 128 characters, and contain no whitespace or control characters.
+
+Migration from a generic remote `baseUrl` configuration is intentional: add `provider: 'custom'`,
+`allowThirdPartyEgress: true` and the service's explicit `apiKey`. A loopback configuration also needs
+`provider: 'custom'` and an explicit key, but not remote consent. Custom HTTPS URLs require consent
+unless their written authority is `127.0.0.1`, `localhost` or `[::1]`, optionally with a port.
+Normalized aliases such as `127.1` are not trusted loopback. Non-loopback HTTP and userinfo are rejected.
+Custom mode is an escape hatch, not proof of API compatibility or a keyless backend.
+
+An explicit `apiKey` wins even when empty, suppressing ambient fallback; missing keys fail before
+HTTP (`JevClient` keeps this failure in `ask`, not construction). Arbitrary explicit token issuers
+cannot be verified locally. Failed requests never switch provider, key or model. Native fetch uses
+`redirect: 'error'` and retains the round AbortSignal; an injected transport must honor these controls.
+The host's `$.http.fetch` has no declared redirect/cancellation control: third-party hook release
+requires a separate host known-positive and redirect-negative probe. This is not yet verified;
+only library native-fetch confinement has been exercised. See [docs/security.md](docs/security.md).
+
+Plugin options are merged with settings and snapshotted per registration. Change provider/model/URL
+only with a plugin reload and cached-answer reset (`forgetAnswers` in tests); no cross-provider cache
+reuse is supported. Remove an old explicit `model: 'jev-latest'` when moving to Vercel, or set
+`typesafe-ai/jev`; the legacy value produces a controlled error rather than being replaced.
 
 ## Options
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `apiKey` | `TYPESAFE_API_KEY` | TypeSafe API key (`compactMessages`/`JevClient`) |
-| `model` | `jev-latest` | Jev model name |
-| `baseUrl` | `https://api.typesafe.ai/v1/systemone` | Full System One-compatible endpoint; HTTPS or loopback HTTP, no userinfo (library and plugin) |
+| `provider` | `typesafe` | `typesafe`, `openrouter`, `vercel` or `custom`; never inferred |
+| `allowThirdPartyEgress` | `false` | Literal boolean opt-in for third-party history transfer |
+| `apiKey` | Selected provider's namespace | Key for the selected service; explicit even if empty; custom has no ambient fallback |
+| `model` | Provider-specific | `jev-latest`, except Vercel's `typesafe-ai/jev`; explicit values validated, never rewritten |
+| `baseUrl` | Provider-specific | Exact full named endpoint, or explicit custom URL; HTTPS or written loopback HTTP, no userinfo |
 | `fetch` | native `fetch` | Injectable fetch implementation for tests |
 | `goal` | last 3 user prompts | Ongoing task description included in the state |
 | `keepThreshold` | `0.5` | Minimum keep probability for a call or result to stay |

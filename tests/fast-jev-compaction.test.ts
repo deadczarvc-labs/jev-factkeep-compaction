@@ -754,7 +754,7 @@ describe('base URL validation', () => {
     expect(request.url).toBe(baseUrl);
     expect(request.headers.authorization).toBe('Bearer k');
     const urls: string[] = [];
-    const client = new JevClient({ apiKey: 'k', baseUrl, fetch: async (url, init) => {
+    const client = new JevClient({ apiKey: 'k', provider: 'custom', allowThirdPartyEgress: true, baseUrl, fetch: async (url, init) => {
       urls.push(String(url));
       expect(init?.headers).toEqual(request.headers);
       return new Response('{"answers":{}}', { status: 200 });
@@ -782,7 +782,7 @@ describe('base URL validation', () => {
   it('does not retry the key at the default endpoint when a custom endpoint fails', async () => {
     const baseUrl = 'https://jev.example.test/endpoint';
     const urls: string[] = [];
-    const client = new JevClient({ apiKey: 'k', baseUrl, fetch: async (url) => {
+    const client = new JevClient({ apiKey: 'k', provider: 'custom', allowThirdPartyEgress: true, baseUrl, fetch: async (url) => {
       urls.push(String(url));
       return new Response('unavailable', { status: 503 });
     } });

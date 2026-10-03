@@ -4,16 +4,28 @@
   "description": "Verbatim Jev-guided compaction for Claude Code sessions (fact-keeping fork: dropped calls keep their facts, never erased).",
   "license": "MIT",
   "userConfig": {
+    "provider": {
+      "type": "string",
+      "title": "Jev provider",
+      "description": "typesafe, openrouter, vercel or custom. Never inferred from credentials or baseUrl.",
+      "default": "typesafe"
+    },
+    "allowThirdPartyEgress": {
+      "type": "boolean",
+      "title": "Allow third-party Jev egress",
+      "description": "Explicitly permit sending fitted history, goal and questions to the selected third-party service and its model provider. Secret masking does not remove all confidential data.",
+      "default": false
+    },
     "apiKey": {
       "type": "string",
-      "title": "TypeSafe API key",
-      "description": "TypeSafe API key. Leave unset to use TYPESAFE_API_KEY.",
+      "title": "Selected service API key",
+      "description": "Key issued for the selected service. Otherwise use only TYPESAFE_API_KEY, OPENROUTER_API_KEY or AI_GATEWAY_API_KEY for its provider; custom requires an explicit key.",
       "sensitive": true
     },
     "baseUrl": {
       "type": "string",
       "title": "System One endpoint",
-      "description": "Full URL of a System One-compatible service. Leave unset for https://api.typesafe.ai/v1/systemone. HTTPS or HTTP on 127.0.0.1, localhost or [::1]; no userinfo. Use the selected service's key."
+      "description": "Full System One endpoint, not an SDK prefix. Named providers require their exact endpoint; other URLs require provider custom and an explicit key. Remote custom requires allowThirdPartyEgress true. HTTPS or explicit loopback HTTP; no userinfo."
     },
     "keepThreshold": {
       "type": "number",
@@ -66,8 +78,7 @@
     "model": {
       "type": "string",
       "title": "Jev model",
-      "description": "TypeSafe Jev model name.",
-      "default": "jev-latest"
+      "description": "Leave unset for the provider default: jev-latest for typesafe/openrouter/custom, typesafe-ai/jev for vercel. Explicit values are validated and never rewritten."
     },
     "saveFullOutputs": {
       "type": "boolean",

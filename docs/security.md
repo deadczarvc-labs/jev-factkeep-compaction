@@ -37,26 +37,56 @@ sent to Jev carries the same history; since 0.3.0-astra.24 it is masked too (see
 
 ### API key and a single destination
 
-`baseUrl` sets one full System One endpoint for the Claude Code hook and `JevClient`.
-The default is `https://api.typesafe.ai/v1/systemone`; the endpoint is neither inferred from
-the key's prefix nor replaced on failure. The API key is sent only to the configured endpoint;
-there is no cross-provider key fallback. Key sources are unchanged: `apiKey`, then
-`TYPESAFE_API_KEY` from the environment (the hook also reads it from settings). For a third-party
-endpoint, explicitly set its own key in `apiKey`: HTTPS alone does not make a server trusted.
+`provider` defaults to `typesafe`, with full endpoint `https://api.typesafe.ai/v1/systemone` and
+only `TYPESAFE_API_KEY`. OpenRouter uses `https://openrouter.ai/api/v1/systemone` and only
+`OPENROUTER_API_KEY`; Vercel uses `https://ai-gateway.vercel.sh/typesafe/v1/systemone` and only
+`AI_GATEWAY_API_KEY`. Neither credentials, a token prefix nor a hostname selects a provider.
+All use the same redacting System One body and numeric `noul` response contract. There is no native
+evaluation adapter or automatic recipient, model or key switch after an error.
+
+OpenRouter, Vercel and remote custom endpoints require literal `allowThirdPartyEgress: true`,
+after the final plugin options merge and before any key lookup or HTTP. Strings such as `"true"`
+are invalid. Consent permits sharing fitted history, goal and questions with the service and its
+model provider; masking does not remove all private, personal or commercial information. It makes
+no no-training, zero-retention or free-service promise. Account/BYOK/fallback provisioning is not done.
+
+An explicit `apiKey` takes precedence even when empty. Otherwise library code reads only the selected
+namespace, and the hook uses one literal `$.env.get` then only the same `settings.env` entry.
+Custom requires an explicit full compatible URL and key; no ambient namespace is available. Remote
+custom needs consent; only written loopback `127.0.0.1`, `localhost` or `[::1]`, optionally with a
+port, avoids it for HTTP or HTTPS. Normalized aliases are not trusted loopback. The issuer of an
+arbitrary explicit token cannot be proved locally: this prevents automatic mixing, not manual misuse.
 
 The shared `checkBaseUrl` in `src/request.ts` checks the endpoint before building a request;
-the `JevClient` constructor and the hook before compaction use it too. Absolute `https://`
-URLs with any host are allowed; `http://` is allowed only on `127.0.0.1`, `localhost` or
+the pure provider resolver invokes it before credential reads. Named endpoints must match exactly,
+not an SDK prefix or a normalized URL with a different path, port, slash, query or fragment. Custom
+absolute `https://` URLs need the consent policy above; `http://` is allowed only on `127.0.0.1`, `localhost` or
 `[::1]`, with or without a port. Non-loopback HTTP, other schemes, malformed URLs and userinfo
 are rejected with `baseUrl must be https:// or a loopback http:// URL`, without the URL or
 credentials in the error message. The hook falls back to the existing built-in summary, just
 as when the key is missing; it does not resend the key to another Jev provider.
 
-This is URL validation, not an allowlist of trusted HTTPS recipients. The body masking below
-does not hide the Authorization header's key from the selected server. Redirect policy for
-the injected transport and the host's `$.http.fetch` is the transport's responsibility;
-its network behavior has not been verified here. Do not configure an endpoint that redirects
-requests or forwards the key to a third party.
+URL validation and consent do not prove an HTTPS recipient trustworthy. The body masking below
+does not hide the Authorization header's key from the selected server. Native `JevClient` fetch
+uses `redirect: 'error'`, retains the round AbortSignal and rejects before fetch when already aborted.
+Loopback tests exercise a successful System One response and a poisoned 307 redirect: the first
+recipient is contacted once, the second receives neither a request body nor Authorization.
+Injected transports must honor these controls themselves.
+
+The host's `$.http.fetch` declarations expose neither redirects nor cancellation; no fake control
+is added through a cast. Its confinement is UNKNOWN until a separate real-host known-positive and
+redirect-negative probe. Third-party hook routes remain disabled by default and are not release-ready
+without that gate; only native library opt-in confinement is verified here. Authenticated provider
+compatibility/account availability also remains unverified. Any live probe requires separate approval,
+synthetic state and the chosen service's own key, never a real transcript.
+
+Configuration errors are deterministic and do not echo URLs, keys or raw options. The hook checks
+even empty/pinned-only history before compaction/cache/offload and delegates once to the existing
+built-in summary on failure. Fallback output preservation remains unchanged. Transport snapshots
+are frozen per registration; a provider/model/URL change requires reload and cached-answer reset.
+The low-level `buildJevRequest` still accepts compatible full URLs without a consent gate because it
+does not send HTTP; caller-owned transports must enforce consent themselves. HTTP error-body safety
+and retry/partial handling belong to the separate transport-error changes, not this provider policy.
 
 Every compaction sends Jev a state: the conversation's texts and tool inputs (results are replaced by a short note).
 Before 0.3.0-astra.24 that state went out as is, so a key pasted into a prompt or written by a tool call reached the
