@@ -255,6 +255,23 @@ Lock wait is at most 500 ms. Locks are never stolen by mtime or PID; a crash req
 verified owner-start-identity recovery. ACK requires fsync and exact event read-back. A partial tail
 can be repaired; corrupt complete lines or unknown schemas are not overwritten.
 
+Recovering from `audit_lock_busy` after a crashed writer. The writer never steals a lock and
+ships no automatic recovery. If a writer dies while it holds the lock (crash, power loss,
+or a process-tree kill), the file
+`<user-home>/.claude/fast-jev/cache/audit/compactions.jsonl.lock` stays behind. After that,
+every append returns `audit_lock_busy` and the journal stops recording. A lock held by a
+live writer in another session clears within about 0.5 s, so act only when `audit_lock_busy`
+repeats across compactions. To recover: (1) Read the lock file. It holds a JSON token
+`{"pid": <n>, "nonce": "<uuid>"}`. Confirm that no process with that PID is a running
+`node ... scripts/audit-writer.mjs`; PIDs are reused, so check the command line, not only
+the number. (2) Delete `compactions.jsonl.lock` by hand; the directory ACL grants full
+control to your own account and SYSTEM. (3) Delete leftover `*.tmp` or `*.acl.tmp` files in
+the same directory. (4) Run
+`<auditLauncherPath> <auditNodePath> <plugin-root>/scripts/audit-writer.mjs --maintenance`
+and expect `{"status":"maintained",...}`; a `tail_repaired` diagnostic is fine. If you get
+`audit_corrupt`, leave the journal in place and inspect it. The event in flight when the
+writer crashed is lost; a `begin` without a matching `final` is the expected incomplete record.
+
 Retention is bounded by 4096 bytes per record, 1048576 bytes total, 500 whole attempt groups and
 2592000000 ms age. The age equality is retained. Cleanup runs on writes or explicit maintenance,
 not an autonomous timer: an idle host can retain expired data until the next call. Run the trusted

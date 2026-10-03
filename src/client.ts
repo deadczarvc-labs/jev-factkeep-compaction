@@ -14,11 +14,13 @@ export class JevClient implements JevAsker {
   private readonly apiKey: string | undefined;
   private readonly endpoint: ResolvedJevEndpoint;
   private readonly fetcher: typeof fetch;
+  private readonly closeNativeConnection: boolean;
 
   constructor(options: JevClientOptions = {}) {
     this.endpoint = resolveJevEndpoint(options);
     this.apiKey = selectJevApiKey(this.endpoint, options.apiKey, process.env);
     this.fetcher = options.fetch ?? fetch;
+    this.closeNativeConnection = options.fetch === undefined;
   }
 
   async ask(state: JevState, questions: JevQuestions, signal?: AbortSignal): Promise<JevResponse> {
@@ -35,7 +37,8 @@ export class JevClient implements JevAsker {
     try {
       response = await this.fetcher(request.url, {
         method: request.method,
-        headers: request.headers,
+        // Avoid native Undici idle timers without changing an injected transport's connection policy.
+        headers: this.closeNativeConnection ? { ...request.headers, connection: 'close' } : request.headers,
         body: request.body,
         redirect: 'error',
         ...(signal === undefined ? {} : { signal }),

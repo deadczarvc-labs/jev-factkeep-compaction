@@ -816,12 +816,16 @@ export const register = (on: On, options: PluginOptions, compactor: typeof compa
       const config = await resolveRuntimeConfig($, {
         ...settings,
         deadlineSleep: (ms: number, options: { signal: AbortSignal }) => $.clock.sleep(ms, options),
-        retrySleep: (ms: number, options: { signal: AbortSignal }) => $.clock.sleep(ms, options),
+        retrySleep: (ms: number, options: { signal: AbortSignal }) => {
+          const remaining = next.budget?.remainingMs ?? Infinity;
+          if (ms + 2000 > remaining) return Promise.reject(new Error('retry exceeds hook budget'));
+          return $.clock.sleep(ms, options);
+        },
         nowMs: () => $.clock.now(),
         ...(settings.auditLog ? { observeRound: (value: RoundObservation) => { round = value; } } : {}),
       });
       await begin([...(config.secrets ?? []), config.apiKey]);
-      usage = await $.session.usage().then(
+      usage = event.agentId ? undefined : await $.session.usage().then(
         (u) => u.context,
         () => undefined,
       );
