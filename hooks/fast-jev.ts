@@ -23,7 +23,7 @@ import type {
 } from '../src/types.js';
 
 /** The running version, in every toast and log line (tests/hook.test.ts keeps it equal to plugin.json). */
-export const VERSION = '0.3.0-astra.23';
+export const VERSION = '0.3.0-astra.24';
 
 const HOOK_DEFAULTS = {
   compactAtPercent: 60,
@@ -250,6 +250,7 @@ export async function compactSession(
   if (!config.apiKey) throw new Error('TYPESAFE_API_KEY is not configured');
   const result = await compact(messages, jevAsker(fetchFn, config.apiKey, config.model), {
     ...config,
+    secrets: [config.apiKey],
     knownAnswers,
     ...(minReduction === undefined ? {} : { minReduction }),
   });
@@ -277,7 +278,7 @@ export async function saveForSummary(messages: readonly SessionMessage[], dir: s
         if (result.text.length < 200) continue;
         await fs.write(`${dir}/${result.tool_use_id.replace(/[^\w.-]/g, '_')}.txt`, redactSecrets(result.text).slice(0, OFFLOAD_MAX_CHARS));
         const use = uses.get(result.tool_use_id);
-        index.push(`${result.tool_use_id}\t${use?.tool ?? '?'}\t${JSON.stringify(use?.input ?? {}).slice(0, 160)}\t${result.text.length} chars`);
+        index.push(`${result.tool_use_id}\t${use?.tool ?? '?'}\t${redactSecrets(JSON.stringify(use?.input ?? {})).slice(0, 160)}\t${result.text.length} chars`);
       }
     }
     if (index.length === 0) return undefined;

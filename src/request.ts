@@ -1,3 +1,4 @@
+import { redactField, redactForEgress } from './secrets.js';
 import type { JevAnswer, JevQuestions, JevResponse, JevState } from './types.js';
 
 export const SYSTEM_ONE_URL = 'https://api.typesafe.ai/v1/systemone';
@@ -10,7 +11,12 @@ export interface JevRequest {
   body: string;
 }
 
-/** The HTTP request for one Jev call, for any fetch-like transport. */
+/**
+ * The HTTP request for one Jev call, for any fetch-like transport. Every string of the body is masked with its field
+ * name in view (`redactField`) and every object key with `redactForEgress`, the API key as a known value: the second
+ * mask behind `compact`, which masks the history before cutting it, and the only one for a caller that builds its own
+ * state. A JSON replacer keeps `toJSON` and the usual error on a cyclic value; `state` and `questions` are not changed.
+ */
 export function buildJevRequest(
   params: {
     apiKey: string;
@@ -20,6 +26,7 @@ export function buildJevRequest(
   state: JevState,
   questions: JevQuestions,
 ): JevRequest {
+  const arrayField = new WeakMap<object, string>();
   return {
     url: params.baseUrl ?? SYSTEM_ONE_URL,
     method: 'POST',
@@ -27,10 +34,18 @@ export function buildJevRequest(
       authorization: `Bearer ${params.apiKey}`,
       'content-type': 'application/json',
     },
-    body: JSON.stringify({
-      model: params.model ?? DEFAULT_MODEL,
-      state,
-      questions,
+    body: JSON.stringify({ model: params.model ?? DEFAULT_MODEL, state, questions }, function (this: object, key: string, value: unknown) {
+      const known = [params.apiKey];
+      // JSON.stringify names an array element "0"; the field that holds the array is the name redactField needs.
+      const field = Array.isArray(this) ? (arrayField.get(this) ?? key) : key;
+      if (typeof value === 'string') return redactField(field, value, known);
+      if (Array.isArray(value)) arrayField.set(value, field);
+      if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;
+      // An object whose key is a secret comes back as a copy with masked keys (JSON.stringify then visits its values);
+      // any other object is returned as is, so the usual cycle check still applies.
+      const keys = Object.keys(value).map((k) => [k, redactForEgress(k, known)] as const);
+      if (keys.every(([k, masked]) => k === masked)) return value;
+      return Object.fromEntries(keys.map(([k, masked]) => [masked, (value as Record<string, unknown>)[k]]));
     }),
   };
 }

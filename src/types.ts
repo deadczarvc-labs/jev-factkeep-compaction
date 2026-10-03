@@ -115,6 +115,11 @@ export interface CompactOptions {
    * `pressure` in hooks/fast-jev.ts), so a compaction gives up no more facts than the window requires.
    */
   minReduction?: number;
+  /**
+   * Values masked exactly wherever they appear in what is sent to Jev, on top of the secret families (the hook passes
+   * its own API key). Masking runs before the history is cut to fit, so a value split by a cut is masked too.
+   */
+  secrets?: readonly string[];
 }
 
 export interface ResolvedCompactOptions {

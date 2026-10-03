@@ -73,7 +73,8 @@ built-in compaction summary with the original messages.
    pinned and never touched.
 2. The **state** sent to Jev is the whole conversation so far, oldest first,
    with every tool result replaced by a short note (`ok, 4213 chars (omitted)`).
-   Tool inputs are included, texts are included, nothing is summarized.
+   Tool inputs are included, texts are included, nothing is summarized; secret
+   values in them are masked first ([docs/security.md](docs/security.md)).
 3. The state is fitted into `maxStateTokens` (25k by default) in stages, each
    applied only if the previous one was not enough: tool inputs truncated to
    1000, then 200, then 60 characters; long texts abridged to head + tail,
@@ -189,6 +190,7 @@ put it in a source file.
 | `maxStateTokens` | `25000` | Estimated token ceiling for the state |
 | `maxRequestTokens` | `30000` | Estimated ceiling for state plus one batch of questions |
 | `truncateHeadChars` | `200` | Characters of a reduced tool result's head kept before its fact lines |
+| `secrets` | `[]` (the API key in `compactMessages` and the hook) | Values masked exactly in everything sent to Jev, before the history is cut to fit |
 
 `result.stats` reports message and character counts before and after, the
 per-reason decision counts, the state size in estimated tokens, which fitting

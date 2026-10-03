@@ -371,6 +371,31 @@ describe('compact', () => {
     expect(reductionRatio(output)).toBeGreaterThan(0);
   });
 
+  it('masks secrets in the history before cutting it to fit, and keeps the transcript original', async () => {
+    const seen: Seen[] = [];
+    const pass = 'aB3dE6gH9jK2mN5p';
+    const own = `ts_${'aB3dE6gH9jK2mN5pQ8sT1vW4yZ7cF0'.repeat(2)}`;
+    const pemBody = 'MIIEvQIBADANBgkqhkiG9w0BAQEFAASC'.repeat(60);
+    const pem = `-----BEGIN ${'PRIVATE'} KEY-----\n${pemBody}\n-----END ${'PRIVATE'} KEY-----`;
+    const messages = [
+      message('user', `deploy with ${'x'.repeat(480)} ${own} please`),
+      call('s1', 'Bash', { command: `export DB_PASSWORD="${pass}" && ./deploy` }, 'ok'),
+      result('s1', 'ok'),
+      call('s2', 'Write', { file_path: 'key.pem', content: pem }, 'written'),
+      result('s2', 'written'),
+      message('assistant', 'done'),
+      message('user', 'thanks'),
+    ];
+    const output = await compact(messages, fakeJev(() => 0.9, seen), { preserveRecentMessages: 1, secrets: [own] });
+    const sent = JSON.stringify(seen.map((r) => r.state));
+    expect(seen.length).toBeGreaterThan(0);
+    expect(sent).not.toContain(pass);
+    expect(sent).not.toContain(pemBody.slice(0, 32));
+    expect(sent).not.toContain(own.slice(0, 6));
+    expect(sent).toContain('[REDACTED:known]');
+    expect(output.messages[1]).toBe(messages[1]);
+  });
+
   it('keeps everything without calling Jev when no tool call is a candidate', async () => {
     const seen: Seen[] = [];
     const messages = [message('user', 'hello'), message('assistant', 'hi')];
@@ -408,6 +433,29 @@ describe('HTTP client', () => {
       state: { a: 1 },
       questions: { q: { type: 'noul', instructions: 'x' } },
     });
+  });
+
+  it('masks secrets in what it sends, its own key included, and leaves the caller state alone', () => {
+    const key = `ts_${'aB3dE6gH9jK2mN5pQ8sT1vW4yZ7cF0'}`;
+    const leaked = `gh${'p_'}${'aB3dE6gH9jK2mN5pQ8sT1vW4yZ7cF0aB3dE6'}`;
+    const state = { messages: [{ text: `export TOKEN=${leaked}; echo ${key}` }] };
+    const request = buildJevRequest({ apiKey: key }, state, {
+      q: { type: 'noul', instructions: `was ${leaked} used?` },
+    });
+    expect(request.headers.authorization).toBe(`Bearer ${key}`);
+    expect(request.body).not.toContain(leaked);
+    expect(request.body).not.toContain(key);
+    expect(JSON.parse(request.body).questions.q.instructions).toBe('was [REDACTED:gh-token] used?');
+    expect(state.messages[0].text).toContain(leaked);
+  });
+
+  it('masks secret-named fields and secret keys of a caller-built state', () => {
+    const token = `gh${'p_'}${'aB3dE6gH9jK2mN5pQ8sT1vW4yZ7cF0aB3dE6'}`;
+    const state = { env: { DB_PASSWORD: 'Xk9mP2vL7qR4tYu8', HOME: '/home/bob' }, tokens: { [token]: 'github' } };
+    const body = buildJevRequest({ apiKey: 'tsk_x_000000' }, state, {}).body;
+    expect(body).not.toContain('Xk9mP2vL7qR4tYu8');
+    expect(body).not.toContain(token);
+    expect(JSON.parse(body).state.env.HOME).toBe('/home/bob');
   });
 
   it('rejects failed and malformed responses', () => {

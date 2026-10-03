@@ -9,5 +9,8 @@ export function compactMessages(
   messages: readonly Message[],
   options: CompactMessagesOptions = {},
 ): Promise<CompactResult> {
-  return compact(messages, new JevClient(options), options);
+  // The key is masked in the history before it is cut to fit, like the hook's own (see CompactOptions.secrets).
+  const apiKey = options.apiKey ?? process.env.TYPESAFE_API_KEY;
+  const secrets = [...(options.secrets ?? []), ...(apiKey ? [apiKey] : [])];
+  return compact(messages, new JevClient(options), { ...options, secrets });
 }

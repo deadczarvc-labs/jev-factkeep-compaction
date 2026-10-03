@@ -1,4 +1,5 @@
 import { noulAnswer } from './request.js';
+import { redactForEgress, redactJson } from './secrets.js';
 import { collectToolCalls, estimateTokens, fitState, goalFromMessages, isPinned } from './state.js';
 import type {
   CallAnswer,
@@ -646,11 +647,17 @@ type StateGroup = { state: ReturnType<typeof fitState>; calls: ToolCall[] };
  * call whose window still cannot fit goes to `floor` and gets the fact rails without Jev.
  */
 export function stateGroups(
-  messages: readonly Message[],
-  calls: readonly ToolCall[],
+  original: readonly Message[],
+  originalCalls: readonly ToolCall[],
   candidates: readonly ToolCall[],
-  options: ResolvedCompactOptions,
+  resolved: ResolvedCompactOptions,
+  secrets: readonly string[] = [],
 ): { groups: StateGroup[]; floor: ToolCall[]; stage: string } {
+  // Every state is built from a masked view, before inputs are truncated and texts abridged: a secret cut in half by
+  // a limit no longer matches its family. Candidates, ids and the returned transcript stay the originals.
+  const messages = original.map((m) => ({ ...m, text: redactForEgress(m.text, secrets) }));
+  const calls = originalCalls.map((c) => ({ ...c, input: redactJson(c.input, secrets) as Record<string, unknown> }));
+  const options = { ...resolved, goal: resolved.goal && redactForEgress(resolved.goal, secrets) };
   // ponytail: test knob to force K windows on a history that fits (agreement experiment); absent in the hook sandbox.
   const forced = Number((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.['FJC_FORCE_WINDOWS'] ?? 0);
   if (!forced) {
@@ -715,7 +722,7 @@ export async function compact(
     if (answer && !call.pinned) answers.set(call.id, answer);
   }
   if (candidates.length > 0) {
-    const { groups, floor, stage } = stateGroups(messages, calls, candidates, resolved);
+    const { groups, floor, stage } = stateGroups(messages, calls, candidates, resolved, options.secrets);
     fitted = { tokens: Math.max(0, ...groups.map((g) => g.state.tokens)), stage };
     const jobs = groups.flatMap((g) => batchCalls(g.calls, g.state.tokens, resolved).map((batch) => ({ state: g.state.state, batch })));
     requests = jobs.length;
