@@ -98,6 +98,22 @@
       "title": "Jev model",
       "description": "Leave unset for the provider default: jev-latest for typesafe/openrouter/custom, typesafe-ai/jev for vercel. Explicit values are validated and never rewritten."
     },
+    "auditLog": {
+      "type": "boolean",
+      "title": "Metadata-only local compaction audit",
+      "description": "Opt-in CLI-native JSONL audit. Requires a trusted absolute Node runtime and a separately verified hidden launcher on Windows. Returned is not proof of host application; failures never change compaction.",
+      "default": false
+    },
+    "auditNodePath": {
+      "type": "string",
+      "title": "Trusted audit Node runtime",
+      "description": "Absolute local path to a trusted node or node.exe runtime. Unset disables the native sink; no PATH lookup, shell, npx or install. Build the bundled dist schema before use."
+    },
+    "auditLauncherPath": {
+      "type": "string",
+      "title": "Verified hidden audit launcher",
+      "description": "Absolute local executable on Windows, with separately verified hidden-window, argv, stdin/stdout and exit-status forwarding (for example nowin.exe). Do not enable audit before its real-host silent probe."
+    },
     "saveFullOutputs": {
       "type": "boolean",
       "title": "Save full outputs",

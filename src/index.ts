@@ -6,3 +6,5 @@ export * from './state.js';
 export * from './compact.js';
 export * from './messages.js';
 export * from './secrets.js';
+export * from './metrics.js';
+export * from './audit.js';

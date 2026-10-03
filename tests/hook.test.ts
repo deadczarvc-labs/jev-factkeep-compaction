@@ -62,7 +62,7 @@ function jevFetch(answer: (name: string) => number, bodies: string[] = []) {
 
 describe('hook config', () => {
   it('reads raw transport values and applies compaction defaults', () => {
-    expect(resolveHookConfig({})).toEqual({ compactAtPercent: 60, minReductionRatio: 0.25, saveFullOutputs: true, maxJevAttempts: 3, maxConcurrentJevRequests: 4, partialAnswers: 'retain-unscored' });
+    expect(resolveHookConfig({})).toEqual({ compactAtPercent: 60, minReductionRatio: 0.25, saveFullOutputs: true, auditLog: false, maxJevAttempts: 3, maxConcurrentJevRequests: 4, partialAnswers: 'retain-unscored' });
     expect(
       resolveHookConfig({ apiKey: 'k', keepThreshold: 0.3, maxStateTokens: 1000, model: 'jev-x', goal: 'g', compactAtPercent: 'no' }),
     ).toEqual({
@@ -74,6 +74,7 @@ describe('hook config', () => {
       compactAtPercent: 60,
       minReductionRatio: 0.25,
       saveFullOutputs: true,
+      auditLog: false,
       maxJevAttempts: 3,
       maxConcurrentJevRequests: 4,
       partialAnswers: 'retain-unscored',

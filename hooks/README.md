@@ -59,6 +59,9 @@ The plugin declares these `userConfig` values in
 | `compactAtPercent` | `60` |
 | `minReductionRatio` | `0.25` (only when the window's fill is unknown) |
 | `saveFullOutputs` | `true` |
+| `auditLog` | `false` (no audit process or filesystem I/O) |
+| `auditNodePath` | Unset; trusted absolute local Node runtime |
+| `auditLauncherPath` | Unset; verified hidden launcher required on Windows |
 | `maxStateTokens` | `25000` |
 | `maxRequestTokens` | `30000` |
 | `compactionTimeoutMs` | `120000` (entire Jev round, including retries and bodies) |
@@ -203,6 +206,60 @@ The pure `finalCompactionOutcome(result, needed, fallback)` adapter reports retu
 result/partial, summary, own fallback, or failure with `host_applied: null`.
 It does not write an audit log; cache membership and a hook return are not independent
 evidence that the host applied a transcript.
+
+## Optional local compaction audit
+
+`auditLog` defaults to `false`: no audit process or journal I/O is performed. This is independent
+of the existing output-preservation option `saveFullOutputs`. Audit is observation only; the
+legacy pressure estimate, character reduction gate, rails, retries and provider routing are unchanged.
+
+Build with `npm run build` before enabling the sink. Configure `auditNodePath` as an explicitly
+trusted absolute local Node executable. On Windows also configure `auditLauncherPath` as a
+trusted absolute hidden launcher with a separately verified argv/stdin/stdout/exit-code contract
+and real-host no-visible-window/no-focus-change probe. The hook uses literal `$.process.run`
+with argv and sanitized DTO stdin, a 1500 ms timeout and no shell. A configured path is a trust
+decision, not an automatic verification of an executable. Keep audit disabled until those
+prerequisites and a live enabled/disabled hook-loader probe are satisfied. The offline harness
+and manifest validation alone do not prove live host capability.
+
+The one writer is `scripts/audit-writer.mjs`, using the packaged pure schema in `dist/audit.js`.
+It owns `<user-home>/.claude/fast-jev/cache/audit/compactions.jsonl`, never a project-selected
+journal path. Native filesystem modules are absent from the hook/import graph. Unsupported
+Desktop/SDK process capability, unconfigured runtimes, lock contention, disk or schema failure
+produce bounded `audit_status` enums, without a filesystem read-modify-write fallback and without
+changing the business return or invoking the summary a second time. UI failures are isolated too.
+
+Schema 1 uses a UUID attempt id and `begin`/one `final`; a begin without final is UNKNOWN/incomplete.
+The final names actual returned messages, summary messages, summary skip, own return after summary
+failure, or a raised error. `host_applied` is always null, including `precompute`. Scoped subagent
+identity is retained; an `auto_request` is a separate request diagnostic, not a compaction count.
+The audit reads the existing `stats.jev` and `finalCompactionOutcome` adapter; it is not another
+retry controller or writer. Planned requests remain distinct from attempts, accepted score pairs,
+cache, floor, reduced and pinned provenance.
+
+`dense30-v1` estimates the same `visible-text-input-result-v1` projection before and after the
+actual mapped/offloaded return. It counts message text, JSON inputs and one canonical outcome per
+id (result block wins, even empty), never both mirrors. The values are estimated tokens, not model
+usage or billing. The observed session-usage and `next()` counters carry separate sources; missing
+is null and observed zero is zero. Error-after is null and skip-after equals before. Duplicate ids
+or unserializable inputs give unavailable measurements, not guessed counts. No transcript, tool
+name, scores, input/output, endpoint, model, cwd, command or exception text is a journal field.
+Active known credentials and the existing redactor protect allowed identifiers before shape checks.
+
+The writer validates the private real parent and rejects links/junctions and hard-linked files.
+POSIX access is 0700/0600; on Windows the directory/file ACL is limited to the current user and
+SYSTEM and read back before ACK. Unexpected explicit principals fail closed, never reset to a
+permissive ACL. A shared exclusive `.lock` covers validation, append, dedupe, retention and repair.
+Lock wait is at most 500 ms. Locks are never stolen by mtime or PID; a crash requires separately
+verified owner-start-identity recovery. ACK requires fsync and exact event read-back. A partial tail
+can be repaired; corrupt complete lines or unknown schemas are not overwritten.
+
+Retention is bounded by 4096 bytes per record, 1048576 bytes total, 500 whole attempt groups and
+2592000000 ms age. The age equality is retained. Cleanup runs on writes or explicit maintenance,
+not an autonomous timer: an idle host can retain expired data until the next call. Run the trusted
+runtime (through the same hidden launcher on Windows) with `scripts/audit-writer.mjs --maintenance`
+to prune/read-check; its bounded result includes `retention_checked_at`. No second stable log or
+telemetry sink is created. Disabling audit does not delete an existing journal.
 
 ## Scope and caveat
 

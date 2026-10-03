@@ -15,6 +15,7 @@
   },
   "files": [
     "dist",
+    "scripts/audit-writer.mjs",
     ".claude-plugin/plugin.json",
     ".codex-plugin",
     "codex-dist/src",
@@ -29,6 +30,7 @@
     "test": "vitest run",
     "demo": "tsx examples/demo.ts",
     "typecheck:hooks": "tsc -p tsconfig.hooks.json",
+    "typecheck:audit-writer": "npm run build && tsc --allowJs --checkJs --noEmit --target ES2022 --module NodeNext --moduleResolution NodeNext --strict --skipLibCheck scripts/audit-writer.mjs",
     "validate:plugin": "claude plugin validate .claude-plugin/plugin.json"
   },
   "devDependencies": {

@@ -139,6 +139,46 @@ The Hermes engine (deadczarvc/hermes-jev-compaction) masks its scoring request w
   alone; a hostile `tool_use_id` stays inside the session folder; expired files are emptied, fresh ones kept. The
   sample keys are built at run time, so no key-shaped literal sits in the repository.
 
+## Metadata-only audit
+
+The optional Claude hook audit is disabled by default (`auditLog: false`, no audit process or
+filesystem I/O), independently of saved tool outputs. It stores only schema-allowlisted enums,
+validated/redacted bounded identifiers, timestamps and finite nullable numeric counters at
+`<user-home>/.claude/fast-jev/cache/audit/compactions.jsonl`. It never collects transcript content,
+tool names or scores, raw exceptions, inputs/outputs, cwd/goal/commands, headers, endpoint URLs or
+user-selected model strings. Before/after estimates are measured in memory on the same original
+visible-text/input/canonical-result domain; only numbers reach disk. Existing known-value/family
+redaction is a second barrier for identifiers, not a guarantee of recognizing arbitrary secrets.
+
+The standalone bundled Node script owns the filesystem; no Node filesystem import is reachable
+from the hook or pure `src/index.ts` graph. Its argv has only the explicitly trusted runtime,
+bundled script and fixed operation; the sanitized event arrives through bounded stdin. Windows
+requires a separately verified hidden launcher. Unavailable capabilities, unsafe paths, lock
+contention, corruption and I/O refusal degrade to bounded enums, never a sandbox read-modify-write
+fallback. No raw payload/path/error is written to stderr or stdout. Compaction and UI fault
+isolation remain independent of sink success.
+
+Private real-parent checks reject traversal, symlinks, junctions and hard-linked target files.
+New POSIX directories/files use 0700/0600. Windows access is restricted to current-user and SYSTEM
+ACLs, read back before ACK; unexpected explicit principals fail closed. This is a local-user trust
+boundary, not protection against the same user or an administrator replacing trusted runtimes.
+Metadata lengths and scoped session identifiers remain sensitive: exclude this cache from backups,
+indexes and sharing. No network or telemetry sink, daemon, install hook or new dependency is added.
+
+One exclusive sidecar lock covers append, dedupe, whole-attempt pruning and tail repair. A live or
+unverifiable stale lock is never stolen by age or PID alone. After a writer crash, recovery must
+independently prove the exact owner/start identity absent; this version does not guess a recovery.
+A partial final line is discarded only under that lock; malformed complete lines or unknown schema
+stop writes without overwriting the file. ACK means fsync plus exact event read-back. Windows ACL
+checks and durability are exercised offline; a real hook-loader and silent-window/focus probe
+remains a separate enablement gate.
+
+Retained limits are 4096 bytes/record, 1048576 bytes/file, 500 attempt groups, 2592000000 ms age.
+Equality at the age cutoff survives. Writes and explicit `--maintenance` prune; maintenance reports
+`retention_checked_at`. No timer guarantees deletion on an idle/stopped host. Disable does not delete
+prior records. Readers treat begin-without-final as UNKNOWN/incomplete, keep auto requests out of
+compaction counts, and never equate returned/precompute with applied (`host_applied: null`).
+
 ## What is left
 
 - A secret outside the families — a password in free text, an internal token with no fixed prefix — is written as

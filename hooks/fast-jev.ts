@@ -1,7 +1,6 @@
 import type {
   On,
   PluginOptions,
-  Register,
   SessionMessage,
   ToolResultSummary,
   ToolUseSummary,
@@ -10,8 +9,10 @@ import type {
 
 import { compact, fullOutputNote, RAIL_FLOOR, reductionRatio, resolveOptions } from '../src/compact.js';
 import { redactSecrets } from '../src/secrets.js';
-import { estimateTokens, safeSlice } from '../src/state.js';
-import { buildJevRequest, JevConfigError, parseJevResponse } from '../src/request.js';
+import { collectToolCalls, estimateTokens, safeSlice } from '../src/state.js';
+import { ESTIMATOR_ID, PROJECTION_ID, estimateDenseTokens, measureTranscript, type MeasureResult } from '../src/metrics.js';
+import { auditArgv, buildAuditEvent, canonicalContentChanged, classifyGate, finalizeMeasurements, normalizeObserved, observedCounters, parseAuditAck, serializeAuditEvent, type AuditEvent, type AuditIdentity, type AuditOutcome, type AuditErrorCode, type AuditSink } from '../src/audit.js';
+import { buildJevRequest, JevConfigError, JevRoundError, parseJevResponse } from '../src/request.js';
 import { requireJevApiKey, resolveJevEndpoint, selectJevApiKey, type JevProviderOptions, type ResolvedJevEndpoint } from '../src/providers.js';
 import type {
   CallAnswer,
@@ -21,6 +22,8 @@ import type {
   Message,
   ToolResult,
   ToolUse,
+  RoundObservation,
+  JevResponse,
 } from '../src/types.js';
 
 /** The running version, in every toast and log line (tests/hook.test.ts keeps it equal to plugin.json). */
@@ -58,6 +61,13 @@ export type HookConfig = CompactOptions & {
   minReductionRatio: number;
   /** Save the full output of every reduced result under `<cwd>/.claude/fast-jev/<session>/`. Default true. */
   saveFullOutputs: boolean;
+  /** Metadata-only local journal; disabled means no audit process or filesystem I/O. */
+  auditLog: boolean;
+  /** Explicit trusted absolute Node runtime and, on Windows, a separately verified hidden launcher. */
+  auditNodePath?: string;
+  auditLauncherPath?: string;
+  /** Internal metadata observer; never sourced from plugin options or allowed to change compaction. */
+  observeRound?: (round: RoundObservation) => void;
 };
 
 export type ResolvedHookConfig = Readonly<
@@ -123,6 +133,9 @@ export function resolveHookConfig(options: PluginOptions): HookConfig {
       HOOK_DEFAULTS.minReductionRatio,
     ),
     saveFullOutputs: options.saveFullOutputs !== false,
+    auditLog: options.auditLog === true,
+    ...(optionString(options, 'auditNodePath') ? { auditNodePath: optionString(options, 'auditNodePath') } : {}),
+    ...(optionString(options, 'auditLauncherPath') ? { auditLauncherPath: optionString(options, 'auditLauncherPath') } : {}),
   };
   for (const key of ['provider', 'baseUrl', 'model', 'allowThirdPartyEgress', 'apiKey'] as const) {
     if (Object.hasOwn(options, key)) config[key] = options[key];
@@ -138,6 +151,7 @@ export function jevAsker(
   apiKey: string,
   endpoint: ResolvedJevEndpoint,
   nowMs: NonNullable<CompactOptions['nowMs']> = async () => Date.now(),
+  observation?: { request: (tokens: number) => void; usage: (usage: JevResponse['usage']) => void },
 ): JevAsker {
   // Configuration errors trigger fallback even with no candidates or cached answers.
   requireJevApiKey(endpoint, apiKey);
@@ -148,6 +162,7 @@ export function jevAsker(
         try { return buildJevRequest({ apiKey, model: endpoint.model, baseUrl: endpoint.baseUrl }, state, questions); }
         catch (error) { throw error instanceof JevConfigError ? error : new JevConfigError('request'); }
       })();
+      if (observation) { try { observation.request(estimateDenseTokens(request.body)); } catch { /* Observation never controls HTTP. */ } }
       const response = await fetchFn(request.url, {
         method: request.method,
         headers: request.headers,
@@ -157,7 +172,9 @@ export function jevAsker(
       const now = await nowMs();
       signal?.throwIfAborted();
       // The SDK buffers text and declares neither cancellation nor a network-error discriminator.
-      return parseJevResponse(response.status, response.ok, response.text, response.headers, now);
+      const parsed = parseJevResponse(response.status, response.ok, response.text, response.headers, now);
+      if (observation) { try { observation.usage(parsed.usage); } catch { /* Retain only numeric usage. */ } }
+      return parsed;
     },
   };
 }
@@ -322,18 +339,66 @@ export async function compactSession(
   // Raw helpers and registered hooks share the same gate, even for empty or pinned-only history.
   const endpoint = runtimeEndpoints.get(config) ?? resolveJevEndpoint(config as JevProviderOptions);
   const apiKey = requireJevApiKey(endpoint, selectJevApiKey(endpoint, config.apiKey as string | undefined, {}));
-  const result = await compact(messages, jevAsker(fetchFn, apiKey, endpoint, config.nowMs), {
+  const snapshot = config.auditLog ? provenanceBefore(messages, config) : undefined;
+  let maximum: number | null = null, responses = 0, usageResponses = 0, input = 0, output = 0, allInput = true, allOutput = true;
+  const observation = snapshot ? {
+    request: (tokens: number) => { maximum = Math.max(maximum ?? 0, tokens); },
+    usage: (usage: JevResponse['usage']) => {
+      responses++;
+      const valid = (n: unknown): n is number => typeof n === 'number' && Number.isSafeInteger(n) && n >= 0;
+      const i = usage?.input_tokens, o = usage?.output_tokens;
+      if (valid(i) || valid(o)) usageResponses++;
+      if (valid(i)) input += i; else allInput = false;
+      if (valid(o)) output += o; else allOutput = false;
+    },
+  } : undefined;
+  const observe = (result?: CompactResult, error?: unknown) => {
+    if (!snapshot || !config.observeRound) return;
+    const counts = result?.stats.jev ?? (error instanceof JevRoundError ? error.counts : undefined);
+    const fresh = result ? counts?.scoredCalls ?? 0 : 0, unscored = counts?.unscoredCalls ?? 0;
+    const round: RoundObservation = {
+      completion: result ? result.stats.jev?.completion ?? 'complete' : 'failed',
+      terminal_code: result?.stats.jev?.terminalCode ?? (error instanceof JevRoundError ? error.code : error ? 'unknown' : 'none'),
+      requests_planned: result?.stats.requests ?? null, attempts: counts?.attempts ?? 0, retries: counts?.retries ?? 0,
+      parsed: counts?.parsed ?? 0, scored_calls: counts?.scoredCalls ?? 0, unscored_calls: unscored, fresh,
+      cache: snapshot.cache, pinned: snapshot.pinned, reduced: snapshot.reduced,
+      floor: result ? Math.max(0, snapshot.candidates - fresh - unscored) : 0,
+      request_estimated_max: maximum, actual_input_tokens: responses > 0 && allInput ? input : null,
+      actual_output_tokens: responses > 0 && allOutput ? output : null, usage_responses: usageResponses,
+    };
+    try { config.observeRound(round); } catch { /* The observer cannot fail compaction. */ }
+  };
+  let result: CompactResult;
+  try { result = await compact(messages, jevAsker(fetchFn, apiKey, endpoint, config.nowMs, observation), {
     ...config,
     secrets: [...(config.secrets ?? []), apiKey],
     knownAnswers,
     ...(minReduction === undefined ? {} : { minReduction }),
-  });
+  }); } catch (error) { observe(undefined, error); throw error; }
   for (const id of knownAnswers.keys()) {
     if (knownAnswers.size <= KNOWN_CAP) break;
     knownAnswers.delete(id);
   }
   const kept = offload ? await offloadOutputs(messages, result.messages, offload.dir, offload.fs) : result.messages;
+  observe(result);
   return { result: { ...result, messages: kept }, messages: toSessionMessages(messages, kept) };
+}
+
+/** The same paired-call eligibility as the core, captured before its valid-answer cache is published. */
+function provenanceBefore(messages: readonly SessionMessage[], config: HookConfig) {
+  const calls = collectToolCalls(messages, config.preserveRecentMessages ?? 6);
+  const reduced = new Set(messages.flatMap((m) => [
+    ...(m.toolResults ?? []).filter((r) => /\[fast-jev-compaction (?:omitted|truncated) /.test(r.text)).map((r) => r.tool_use_id),
+    ...m.toolUses.filter((u) => u.text !== undefined && /\[fast-jev-compaction (?:omitted|truncated) /.test(u.text)).map((u) => u.tool_use_id),
+  ]));
+  const snapshot = { pinned: 0, reduced: 0, cache: 0, candidates: 0 };
+  for (const call of calls) {
+    if (call.pinned) snapshot.pinned++;
+    else if (reduced.has(call.tool_use_id)) snapshot.reduced++;
+    else if (knownAnswers.has(call.tool_use_id)) snapshot.cache++;
+    else snapshot.candidates++;
+  }
+  return snapshot;
 }
 
 /**
@@ -543,6 +608,8 @@ export async function resolveRuntimeConfig($: HookKeySource, config: HookConfig)
   return resolved;
 }
 
+function safeUi(action: () => void): void { try { action(); } catch { /* UI cannot choose a compaction route. */ } }
+
 function notify(
   $: {
     ui: {
@@ -555,10 +622,10 @@ function notify(
 ): void {
   // The version goes last: jev-watch classifies the outcome by the text's start (`kept …`, `fallback to …`).
   const line = `${text} · ${VERSION}`;
-  $.ui.log(line);
+  safeUi(() => $.ui.log(line));
   // A routine compaction is a transcript line only: a 15 s toast every half hour per session read as an alarm
   // (user 2026-10-03). The fallback and its failure still toast: they cost minutes, and Send now / Stop matter there.
-  if (toast) $.ui.toast(line, { timeoutMs: 15_000 });
+  if (toast) safeUi(() => $.ui.toast(line, { timeoutMs: 15_000 }));
 }
 
 // ponytail: the hook context's type is not exported under a name here; only session.cwd/id and fs.write are used.
@@ -628,9 +695,9 @@ async function readOptions(
   const merged = resolveHookConfig({ ...options, ...extra });
   if (merged.compactAtPercent !== configured.compactAtPercent) {
     // Debug log only: a line in the transcript read as breakage; jev-watch still records it.
-    $.ui.log(`options: compactAtPercent ${merged.compactAtPercent} from settings.json (the host passed ${configured.compactAtPercent}) · ${VERSION}`, {
+    safeUi(() => $.ui.log(`options: compactAtPercent ${merged.compactAtPercent} from settings.json (the host passed ${configured.compactAtPercent}) · ${VERSION}`, {
       to: 'debug',
-    });
+    }));
   }
   return merged;
 }
@@ -643,7 +710,8 @@ function fillText(usage: WindowUsage | undefined): string {
   return usage?.tokens && usage.window ? `context ${usage.tokens}/${usage.window} tokens` : 'context fill unknown';
 }
 
-export const register: Register = (on: On, options: PluginOptions) => {
+/** Optional compactor injection is only for offline lifecycle fixtures; hosts call the original two-argument register. */
+export const register = (on: On, options: PluginOptions, compactor: typeof compactSession = compactSession): void => {
   const rawOptions = Object.freeze({ ...options });
   const configured = resolveHookConfig(rawOptions);
   let compacting = false;
@@ -665,20 +733,83 @@ export const register: Register = (on: On, options: PluginOptions) => {
     let own: SessionMessage[] | undefined;
     let candidate: CompactResult | undefined;
     let needed: Pressure = { minReduction: RAIL_FLOOR, gate: configured.minReductionRatio };
+    let settings = configured, usage: WindowUsage | undefined, before: MeasureResult | undefined, identity: AuditIdentity | undefined;
+    let finalized = false, auditKnown: readonly string[] = [], round: RoundObservation | undefined, freshCandidates = 0;
+    let errorCode: AuditErrorCode = 'none';
+    const emit: AuditSink = async (event: AuditEvent) => {
+      let status: Awaited<ReturnType<AuditSink>>;
+      try {
+        const argv = auditArgv(settings.auditNodePath, settings.auditLauncherPath, $.plugin.root);
+        if (!argv) status = { status: 'audit_unavailable' };
+        else {
+          const ack = await $.process.run(argv, { stdin: serializeAuditEvent(event), timeoutMs: 1500 });
+          status = parseAuditAck(ack.stdout, ack.exitCode);
+        }
+      } catch { status = { status: 'audit_unavailable' }; }
+      if (status.status !== 'written' && status.status !== 'duplicate') safeUi(() => $.ui.log(`audit_status=${status.status}`, { to: 'debug' }));
+      return status;
+    };
+    const begin = async (known: readonly string[] = []) => {
+      if (!settings.auditLog || identity) return;
+      try {
+        auditKnown = known;
+        const started = await $.clock.now();
+        let session: string | null = null;
+        try { const id = await $.session.id(); session = event.agentId ? `${id}:${event.agentId}` : id; } catch { /* Identity can be unavailable. */ }
+        before = measureTranscript(event.messages);
+        const record = buildAuditEvent({ schema: 1, kind: 'begin', plugin: 'fast-jev-compaction', plugin_version: VERSION,
+          attempt_id: crypto.randomUUID(), session_id: session, trigger: event.trigger, started_at_ms: started,
+          before, estimator_id: ESTIMATOR_ID, projection_id: PROJECTION_ID }, known);
+        if (record.kind !== 'begin') return;
+        const { schema, plugin, plugin_version, attempt_id, session_id, trigger, started_at_ms } = record;
+        identity = { schema, plugin, plugin_version, attempt_id, session_id, trigger, started_at_ms };
+        freshCandidates = provenanceBefore(event.messages, settings).candidates;
+        await emit(record);
+      } catch { safeUi(() => $.ui.log('audit_status=audit_unavailable', { to: 'debug' })); }
+    };
+    const finish = async (outcome: AuditOutcome, messages: readonly SessionMessage[] | null,
+      core?: { tokensBefore?: number; tokensAfter?: number }) => {
+      if (!settings.auditLog || finalized) return;
+      finalized = true;
+      if (!identity || !before) return;
+      try {
+        const finished = Math.max(identity.started_at_ms, await $.clock.now());
+        const counts = candidate?.stats.jev;
+        const observedRound: RoundObservation = round ?? {
+          completion: candidate ? counts?.completion ?? 'complete' : 'failed', terminal_code: counts?.terminalCode ?? 'none',
+          requests_planned: candidate?.stats.requests ?? null, attempts: counts?.attempts ?? 0, retries: counts?.retries ?? 0,
+          parsed: counts?.parsed ?? 0, scored_calls: counts?.scoredCalls ?? 0, unscored_calls: counts?.unscoredCalls ?? 0,
+          fresh: counts?.scoredCalls ?? 0, cache: 0, floor: 0, reduced: 0, pinned: candidate?.stats.pinned ?? 0,
+          request_estimated_max: null, actual_input_tokens: null, actual_output_tokens: null, usage_responses: 0,
+        };
+        const gate = classifyGate({ freshCandidates, reduction: candidate ? reductionRatio(candidate) : 0, gate: needed.gate,
+          hasUsage: typeof usage?.tokens === 'number' && Number.isFinite(usage.tokens) && typeof usage.window === 'number' && usage.window > 0,
+          error: errorCode !== 'none' && errorCode !== 'summary_error' });
+        await emit(buildAuditEvent({ ...identity, kind: 'final', finished_at_ms: finished, duration_ms: finished - identity.started_at_ms,
+          ...gate, outcome, error_code: errorCode, estimates: finalizeMeasurements(before, messages === null ? null : measureTranscript(messages)),
+          round: observedRound, observed: observedCounters(normalizeObserved({ usage, core })), host_applied: null }, auditKnown));
+      } catch { safeUi(() => $.ui.log('audit_status=audit_unavailable', { to: 'debug' })); }
+    };
     // A fallback still keeps every output: saved to files, and the summarizer is told where they are.
     const fallback = async (reason: string, settings: HookConfig) => {
       notify($, `fallback to built-in summary (${reason}); it takes 1–3 min, Send now or Stop aborts it`);
       const target = settings.saveFullOutputs ? await offloadTarget($) : undefined;
       const note = target ? await saveForSummary(event.messages, target.dir, target.fs) : undefined;
       try {
-        return await next(note ? { ...event, instructions: [event.instructions, note].filter(Boolean).join('\n\n') } : event);
+        const returned = await next(note ? { ...event, instructions: [event.instructions, note].filter(Boolean).join('\n\n') } : event);
+        await finish(returned.messages ? 'summary_returned' : 'summary_skip_returned', returned.messages ?? event.messages,
+          returned.messages ? returned : undefined);
+        return returned;
       } catch (error) {
-        if (!own || finalCompactionOutcome(candidate, needed, 'failed').outcome !== 'own-returned') throw error;
+        errorCode = 'summary_error';
+        if (!own || finalCompactionOutcome(candidate, needed, 'failed').outcome !== 'own-returned') {
+          await finish('error_raised', null); throw error;
+        }
         notify($, `kept ${own.length}/${event.messages.length} messages after the built-in summary failed (${errorText(error)})`);
+        await finish('own_returned_after_summary_error', own);
         return { messages: own };
       }
     };
-    let settings = configured;
     try {
       settings = await (effective ??= readOptions($, rawOptions, configured));
       const config = await resolveRuntimeConfig($, {
@@ -686,13 +817,15 @@ export const register: Register = (on: On, options: PluginOptions) => {
         deadlineSleep: (ms: number, options: { signal: AbortSignal }) => $.clock.sleep(ms, options),
         retrySleep: (ms: number, options: { signal: AbortSignal }) => $.clock.sleep(ms, options),
         nowMs: () => $.clock.now(),
+        ...(settings.auditLog ? { observeRound: (value: RoundObservation) => { round = value; } } : {}),
       });
-      const usage = await $.session.usage().then(
+      await begin([...(config.secrets ?? []), config.apiKey]);
+      usage = await $.session.usage().then(
         (u) => u.context,
         () => undefined,
       );
       needed = pressure(usage, transcriptTokens(event.messages), config, lowest);
-      const { result, messages } = await compactSession(
+      const { result, messages } = await compactor(
         event.messages,
         config,
         async (url, init) => {
@@ -704,7 +837,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
       );
       candidate = result;
       // Per-call decisions are diagnosis, not news: debug log (and jev-watch), never the transcript.
-      for (const line of decisionLogLines(result)) $.ui.log(line, { to: 'debug' });
+      for (const line of decisionLogLines(result)) safeUi(() => $.ui.log(line, { to: 'debug' }));
       if (finalCompactionOutcome(result, needed, 'not-called').outcome === 'failure') {
         if (reductionRatio(result) > 0) own = messages;
         // `return` without `await`: a failing fallback must not land in the catch below and run the summary twice.
@@ -719,8 +852,18 @@ export const register: Register = (on: On, options: PluginOptions) => {
         `kept ${messages.length}/${event.messages.length} messages, no summary (${summarize(result)}; ${fillText(usage)}, compactAtPercent ${settings.compactAtPercent})`,
         false,
       );
+      if (settings.auditLog) {
+        try {
+          const outcome: AuditOutcome = (round?.fresh ?? result.stats.jev?.scoredCalls ?? 0) > 0 ? 'jev_returned' :
+            canonicalContentChanged(event.messages, messages) ? 'local_returned' : 'original_returned';
+          await finish(outcome, messages);
+        } catch { safeUi(() => $.ui.log('audit_status=audit_unavailable', { to: 'debug' })); }
+      }
       return { messages };
     } catch (error) {
+      errorCode = error instanceof JevConfigError ? error.kind === 'api_key' ? 'missing_key' : error.kind === 'url' ? 'invalid_endpoint' : 'contract' :
+        error instanceof JevRoundError ? error.code : 'unknown';
+      await begin([...(settings.secrets ?? []), ...(typeof settings.apiKey === 'string' ? [settings.apiKey] : [])]);
       return fallback(errorText(error), settings);
     }
   });
@@ -731,28 +874,52 @@ export const register: Register = (on: On, options: PluginOptions) => {
     if (event.agentId || compacting || compactUnavailable) return next(event);
     let fill: WindowUsage | undefined;
     let threshold = configured.compactAtPercent;
+    let settings = configured, autoIdentity: AuditIdentity | undefined;
+    let requestOutcome: 'requested' | 'not_available' | 'error' = 'error';
     try {
-      threshold = (await (effective ??= readOptions($, rawOptions, configured))).compactAtPercent;
+      settings = await (effective ??= readOptions($, rawOptions, configured));
+      threshold = settings.compactAtPercent;
       const { context } = await $.session.usage();
       fill = context;
       seen(context.tokens ?? undefined);
       if ((context.percent ?? 0) < threshold) return next(event);
       compacting = true;
+      if (settings.auditLog) {
+        try {
+          const id = await $.session.id();
+          const raw = buildAuditEvent({ schema: 1, kind: 'auto_request', plugin: 'fast-jev-compaction', plugin_version: VERSION,
+            attempt_id: crypto.randomUUID(), session_id: id, trigger: 'plugin', started_at_ms: await $.clock.now(),
+            request_outcome: 'requested', error_code: 'none' }, typeof settings.apiKey === 'string' ? [settings.apiKey] : []);
+          const { schema, plugin, plugin_version, attempt_id, session_id, trigger, started_at_ms } = raw;
+          autoIdentity = { schema, plugin, plugin_version, attempt_id, session_id, trigger, started_at_ms };
+        } catch { safeUi(() => $.ui.log('audit_status=audit_unavailable', { to: 'debug' })); }
+      }
       await $.session.compact();
+      requestOutcome = 'requested';
     } catch (error) {
       const text = errorText(error);
       compactUnavailable = /not available/.test(text);
+      requestOutcome = compactUnavailable ? 'not_available' : 'error';
       // The headless refusal is expected there, so it goes to the debug log (and jev-watch), not the transcript.
       if (compactUnavailable) {
-        $.ui.log(
+        safeUi(() => $.ui.log(
           `auto-compact skipped (${text}); not asked again this session: the engine's threshold compacts here (${fillText(fill)}, compactAtPercent ${threshold}) · ${VERSION}`,
           { to: 'debug' },
-        );
+        ));
       } else {
-        $.ui.log(`auto-compact skipped (${text})`, { to: 'debug' });
+        safeUi(() => $.ui.log(`auto-compact skipped (${text})`, { to: 'debug' }));
       }
     } finally {
       compacting = false;
+    }
+    if (autoIdentity) {
+      try {
+        const argv = auditArgv(settings.auditNodePath, settings.auditLauncherPath, $.plugin.root);
+        const record = buildAuditEvent({ ...autoIdentity, kind: 'auto_request', request_outcome: requestOutcome, error_code: requestOutcome === 'requested' ? 'none' : 'unknown' });
+        const ack = argv ? await $.process.run(argv, { stdin: serializeAuditEvent(record), timeoutMs: 1500 }) : undefined;
+        const status = ack ? parseAuditAck(ack.stdout, ack.exitCode).status : 'audit_unavailable';
+        if (status !== 'written' && status !== 'duplicate') safeUi(() => $.ui.log(`audit_status=${status}`, { to: 'debug' }));
+      } catch { safeUi(() => $.ui.log('audit_status=audit_unavailable', { to: 'debug' })); }
     }
     return next(event);
   });

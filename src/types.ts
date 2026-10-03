@@ -79,6 +79,27 @@ export interface JevRoundStats extends JevRoundCounts {
   terminalCode: JevTerminalCode;
 }
 
+/** Metadata-only observation of the existing round; never selects facts or changes request budgets. */
+export interface RoundObservation {
+  completion: 'complete' | 'partial' | 'failed';
+  terminal_code: JevTerminalCode;
+  requests_planned: number | null;
+  attempts: number;
+  retries: number;
+  parsed: number;
+  scored_calls: number;
+  unscored_calls: number;
+  fresh: number;
+  cache: number;
+  floor: number;
+  reduced: number;
+  pinned: number;
+  request_estimated_max: number | null;
+  actual_input_tokens: number | null;
+  actual_output_tokens: number | null;
+  usage_responses: number;
+}
+
 export interface HistoryToolCall {
   id: string;
   tool: string;

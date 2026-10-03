@@ -160,11 +160,12 @@ describe('Codex plugin packaging', () => {
     expect(paths).toEqual(expect.arrayContaining([
       '.claude-plugin/plugin.json', '.codex-plugin/plugin.json', '.codex-plugin/hooks.json',
       'codex-dist/codex/fact-sheet.js', 'codex-dist/src/codex.js', 'dist/index.js', 'package.json',
+      'scripts/audit-writer.mjs', 'dist/audit.js', 'dist/metrics.js',
     ]));
     expect(paths.filter((path) => /test-runtime|host-schema|\.jsonl$|(?:^|\/)\.env(?:\/|$)/.test(path))).toEqual([]);
     expect(paths.every((path) => path.startsWith('dist/') || path.startsWith('codex-dist/src/') || [
       '.claude-plugin/plugin.json', '.codex-plugin/plugin.json', '.codex-plugin/hooks.json',
-      'codex-dist/codex/fact-sheet.js', 'README.md', 'LICENSE', 'package.json',
+      'codex-dist/codex/fact-sheet.js', 'scripts/audit-writer.mjs', 'README.md', 'LICENSE', 'package.json',
     ].includes(path))).toBe(true);
     console.info(JSON.stringify({ packageFileCount: listing.entryCount, packageFiles: paths }));
   });

@@ -47,6 +47,27 @@ Upstream erases every call Jev scores as stale, observations of the world includ
 Where and why upstream loses facts, with proofs and per-call data: [docs/why-facts-are-lost.md](docs/why-facts-are-lost.md).
 Method and every round: [docs/evidence.md](docs/evidence.md).
 
+## Optional metadata audit
+
+The Claude hook can opt into one private local JSONL compaction audit with `auditLog: true`.
+It defaults to false and adds no audit I/O while disabled. It observes existing outcomes and
+`stats.jev`, not a new compaction route, provider, request-budget guard or pressure estimator.
+`dense30-v1` counts canonical visible text/input/results before and after the actual return;
+estimated tokens, separately sourced observed usage, and nullable unobserved values never imply
+billing or host application. Every attempt has `begin`/one `final`; incomplete is UNKNOWN and
+`host_applied` is null. Auto requests are not actual compactions.
+
+The bundled native writer requires a built `dist` schema, a trusted absolute `auditNodePath`,
+CLI process capability and, on Windows, a separately verified hidden `auditLauncherPath`.
+Keep it disabled until the real-host loader and silent-window gates are verified. There is no
+sandbox filesystem fallback. The sole target is
+`<user-home>/.claude/fast-jev/cache/audit/compactions.jsonl`, with private access, an exclusive
+append/retention lock, fsync/read-back ACK, strict content-free schema, and bounded whole-attempt
+retention. Expiry is checked on writes or explicit maintenance, not while an idle host is stopped.
+Failures report bounded enums and do not change the returned transcript or run summary twice.
+See [hooks/README.md](hooks/README.md#optional-local-compaction-audit) and
+[docs/security.md](docs/security.md#metadata-only-audit) for prerequisites and limits.
+
 ## About the engine
 
 Claude Code plugin that replaces the compaction summary with Jev decisions:
