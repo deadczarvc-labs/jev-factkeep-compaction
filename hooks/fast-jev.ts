@@ -23,7 +23,7 @@ import type {
 } from '../src/types.js';
 
 /** The running version, in every toast and log line (tests/hook.test.ts keeps it equal to plugin.json). */
-export const VERSION = '0.3.0-astra.24';
+export const VERSION = '0.3.0-astra.25';
 
 const HOOK_DEFAULTS = {
   compactAtPercent: 60,
@@ -455,11 +455,14 @@ function notify(
     };
   },
   text: string,
+  toast = true,
 ): void {
   // The version goes last: jev-watch classifies the outcome by the text's start (`kept …`, `fallback to …`).
   const line = `${text} · ${VERSION}`;
   $.ui.log(line);
-  $.ui.toast(line, { timeoutMs: 15_000 });
+  // A routine compaction is a transcript line only: a 15 s toast every half hour per session read as an alarm
+  // (user 2026-10-03). The fallback and its failure still toast: they cost minutes, and Send now / Stop matter there.
+  if (toast) $.ui.toast(line, { timeoutMs: 15_000 });
 }
 
 // ponytail: the hook context's type is not exported under a name here; only session.cwd/id and fs.write are used.
@@ -609,6 +612,7 @@ export const register: Register = (on: On, options: PluginOptions) => {
         $,
         // fill and the pair in force: what a held-out check attributes the event to (track autocompact-threshold)
         `kept ${messages.length}/${event.messages.length} messages, no summary (${summarize(result)}; ${fillText(usage)}, compactAtPercent ${settings.compactAtPercent})`,
+        false,
       );
       return { messages };
     } catch (error) {

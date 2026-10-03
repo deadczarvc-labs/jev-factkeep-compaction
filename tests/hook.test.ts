@@ -355,13 +355,14 @@ describe('register', () => {
   function host(settings: Record<string, unknown>, usage: Record<string, number>, compact?: () => Promise<unknown>) {
     const logs: string[] = [];
     const debug: string[] = [];
+    const toasts: string[] = [];
     const calls = { compact: 0 };
     const $ = {
       settings: { read: async () => settings },
       env: { get: async () => undefined },
       ui: {
         log: (text: string, options?: { to?: string }) => (options?.to === 'debug' ? debug : logs).push(text),
-        toast: () => undefined,
+        toast: (text: string) => toasts.push(text),
       },
       session: {
         usage: async () => ({ context: usage }),
@@ -373,7 +374,7 @@ describe('register', () => {
       // t1 (the Read) dropped, t2 kept: a real reduction, far below a full window's gate
       http: { fetch: jevFetch((name) => (name === 'call_t2' || name === 'result_t2' ? 0.9 : 0.1)) },
     };
-    return { $, logs, debug, calls };
+    return { $, logs, debug, toasts, calls };
   }
 
   function load(options: Record<string, unknown> = {}) {
@@ -390,7 +391,7 @@ describe('register', () => {
   const full = { tokens: 990_000, window: 1_000_000, percent: 99 };
 
   it('installs its own compaction when the built-in summary it fell back to fails', async () => {
-    const { $, logs, debug } = host({}, full);
+    const { $, logs, debug, toasts } = host({}, full);
     const event = { trigger: 'auto', messages: transcript() };
     const next = async () => {
       throw new Error('reactive compaction did not settle ok');
@@ -405,6 +406,8 @@ describe('register', () => {
     expect(logs.some((line) => /context 990000\/1000000 tokens, compactAtPercent 20/.test(line))).toBe(true);
     expect(answer.messages.map((m) => m.handle)).toEqual(['h-0', undefined, undefined, 'h-tool-2', 'r-tool-2', 'h-5', 'h-6']);
     expect(logs.at(-1)).toMatch(/^kept 7\/7 messages after the built-in summary failed \(reactive compaction did not settle ok\)/);
+    // the fallback and its failure cost minutes: both still toast
+    expect(toasts.map((t) => t.split(' ')[0])).toEqual(['fallback', 'kept']);
   });
 
   it('passes the failure on when it has nothing of its own to install', async () => {
@@ -418,7 +421,7 @@ describe('register', () => {
   });
 
   it('takes compactAtPercent from settings.json when the host passed the default', async () => {
-    const { $, logs, debug } = host(
+    const { $, logs, debug, toasts } = host(
       { pluginConfigs: { 'fast-jev-compaction@fast-jev-compaction': { options: { compactAtPercent: 95 } } } },
       // a small window, so the transcript (~300 tokens) is a real share of it, as in a long session
       { tokens: 960, window: 1_000, percent: 96 },
@@ -438,6 +441,8 @@ describe('register', () => {
     // the outcome line names the pair in force, so a held-out check can attribute the event
     expect(logs.at(-1)).toMatch(/^kept 7\/7 messages, no summary \(.*; context 960\/1000 tokens, compactAtPercent 95\)/);
     expect(logs.some((line) => line.startsWith('options'))).toBe(false);
+    // a routine compaction is a transcript line, never a toast
+    expect(toasts).toEqual([]);
   });
 
   it('asks a headless host for compaction once, then leaves it to the engine', async () => {

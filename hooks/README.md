@@ -77,7 +77,7 @@ the transcript (system prompt, tools) is subtracted, since it does not shrink. I
 capped by the smallest context seen in the session and by 15% of the window: the
 char-based transcript estimate reads ~1.75× low, and the uncapped remainder once
 demanded a 42% cut where 5% sufficed (2026-10-02).
-`minReductionRatio` applies only when the usage figures are unavailable. The outcome is shown as a toast and logged with the
+`minReductionRatio` applies only when the usage figures are unavailable. The outcome is logged to the transcript with the
 reduction, per-reason counts, state size and request count; a per-call
 `decisions:` line with both probabilities is logged for diagnosis. If the
 built-in summary it fell back to then fails (an error, or Send now / Stop
