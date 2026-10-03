@@ -14,6 +14,7 @@ import {
   resolveHookConfig,
   summarize,
   toSessionMessages,
+  type HookFetchInit,
 } from '../hooks/fast-jev.ts';
 import { applyDecisions, collectToolCalls, decideCall, fullOutputNote, type Message } from '../src/index.js';
 
@@ -74,6 +75,96 @@ describe('hook config', () => {
       minReductionRatio: 0.25,
       saveFullOutputs: true,
     });
+  });
+});
+
+describe('base URL', () => {
+  beforeEach(() => forgetAnswers());
+  const invalidUrlError = 'baseUrl must be https:// or a loopback http:// URL';
+  type Request = { url: string; init?: HookFetchInit };
+
+  function captureRequests(requests: Request[]) {
+    const respond = jevFetch(() => 0.9);
+    return async (url: string, init?: HookFetchInit) => {
+      requests.push({ url, init });
+      return respond(url, init);
+    };
+  }
+
+  it('baseUrl option reaches the request', async () => {
+    const baseUrl = 'https://jev.example.test/decisions?tenant=local';
+    const config = resolveHookConfig({ apiKey: 'k', baseUrl, preserveRecentMessages: 1 });
+    const requests: Request[] = [];
+    expect(config.baseUrl).toBe(baseUrl);
+    const output = await compactSession(transcript(), config, captureRequests(requests));
+    expect(output.result.stats.requests).toBe(1);
+    expect(requests.map((request) => request.url)).toEqual([baseUrl]);
+    expect(requests[0]?.init?.headers?.authorization).toBe('Bearer k');
+    expect(JSON.parse(requests[0]!.init!.body!).model).toBe('jev-latest');
+  });
+
+  it('rejects a plain-http baseUrl', async () => {
+    const config = resolveHookConfig({ apiKey: 'k', baseUrl: 'http://jev.example.test/v1/systemone', preserveRecentMessages: 1 });
+    const requests: Request[] = [];
+    await expect(compactSession(transcript(), config, captureRequests(requests))).rejects.toThrow(invalidUrlError);
+    expect(requests).toEqual([]);
+  });
+
+  it('allows a loopback http baseUrl', async () => {
+    const requests: Request[] = [];
+    const endpoints = ['127.0.0.1', 'localhost', '[::1]'].map((host) => `http://${host}:8321/v1/systemone`);
+    for (const baseUrl of endpoints) {
+      forgetAnswers();
+      await compactSession(transcript(), resolveHookConfig({ apiKey: 'k', baseUrl, preserveRecentMessages: 1 }), captureRequests(requests));
+    }
+    expect(requests.map((request) => request.url)).toEqual(endpoints);
+    expect(requests.every((request) => request.init?.headers?.authorization === 'Bearer k')).toBe(true);
+  });
+
+  it('default endpoint is unchanged', async () => {
+    const config = resolveHookConfig({ apiKey: 'k', preserveRecentMessages: 1 });
+    const requests: Request[] = [];
+    expect(config.baseUrl).toBeUndefined();
+    await compactSession(transcript(), config, captureRequests(requests));
+    expect(requests.map((request) => request.url)).toEqual(['https://api.typesafe.ai/v1/systemone']);
+  });
+
+  it('leaves empty or non-string baseUrl options unset', () => {
+    expect(resolveHookConfig({ baseUrl: '' }).baseUrl).toBeUndefined();
+    expect(resolveHookConfig({ baseUrl: false }).baseUrl).toBeUndefined();
+  });
+
+  it('rejects userinfo, deceptive hosts, invalid URLs and other schemes before fetch', async () => {
+    const requests: Request[] = [];
+    for (const baseUrl of [
+      'https://user:pass@jev.example.test/v1/systemone',
+      'https://user@jev.example.test/v1/systemone',
+      'https://:pass@jev.example.test/v1/systemone',
+      'https://@jev.example.test/v1/systemone',
+      'http://user:pass@localhost:8321/v1/systemone',
+      'http://localhost.evil.test/v1/systemone',
+      'http://localhost@evil.test/v1/systemone',
+      'http://127.0.0.1.evil.test/v1/systemone',
+      'http://127.0.0.2/v1/systemone',
+      'http://[::2]/v1/systemone',
+      'http://[::ffff:127.0.0.1]/v1/systemone',
+      'ftp://localhost/v1/systemone',
+      'file:///v1/systemone',
+      '//jev.example.test/v1/systemone',
+      'not-a-url',
+      'https://',
+    ]) {
+      const config = resolveHookConfig({ apiKey: 'k', baseUrl, preserveRecentMessages: 1 });
+      await expect(compactSession(transcript(), config, captureRequests(requests)), baseUrl).rejects.toThrow(invalidUrlError);
+    }
+    expect(requests).toEqual([]);
+  });
+
+  it('rejects an invalid endpoint even when no call needs Jev', async () => {
+    const config = resolveHookConfig({ apiKey: 'k', baseUrl: 'http://jev.example.test/v1/systemone' });
+    const requests: Request[] = [];
+    await expect(compactSession([message('user', 'hello')], config, captureRequests(requests))).rejects.toThrow(invalidUrlError);
+    expect(requests).toEqual([]);
   });
 });
 
@@ -443,6 +534,54 @@ describe('register', () => {
     expect(logs.some((line) => line.startsWith('options'))).toBe(false);
     // a routine compaction is a transcript line, never a toast
     expect(toasts).toEqual([]);
+  });
+
+  it('falls back on an invalid baseUrl just as on a missing key', async () => {
+    for (const options of [
+      { apiKey: undefined },
+      { baseUrl: 'http://jev.example.test/v1/systemone' },
+      { baseUrl: 'https://user:pass@jev.example.test/v1/systemone' },
+    ]) {
+      const { $, logs } = host({}, full);
+      let requests = 0;
+      $.http.fetch = async () => {
+        requests++;
+        throw new Error('unexpected fetch');
+      };
+      let summaries = 0;
+      const event = { trigger: 'auto', messages: transcript() };
+      const fallback = { messages: [message('assistant', 'built-in summary')] };
+      const next = async (incoming: unknown) => {
+        expect(incoming).toBe(event);
+        summaries++;
+        return fallback;
+      };
+      expect(await load(options).get('session.compact')!($, event, next)).toBe(fallback);
+      expect(requests).toBe(0);
+      expect(summaries).toBe(1);
+      expect(logs[0]).toContain(options.baseUrl ? 'baseUrl must be https:// or a loopback http:// URL' : 'TYPESAFE_API_KEY is not configured');
+      expect(logs.join('\n')).not.toContain('user:pass');
+    }
+  });
+
+  it('reads baseUrl from settings and never retries another endpoint on failure', async () => {
+    const baseUrl = 'https://jev.example.test/v1/systemone';
+    const { $, logs } = host({ pluginConfigs: { 'fast-jev-compaction@fast-jev-compaction': { options: { baseUrl } } } }, full);
+    const requests: string[] = [];
+    $.http.fetch = async (url, init) => {
+      requests.push(url);
+      expect((init as HookFetchInit)?.headers?.authorization).toBe('Bearer k');
+      return { status: 503, ok: false, text: 'unavailable' };
+    };
+    let summaries = 0;
+    const next = async () => {
+      summaries++;
+      return { messages: [] };
+    };
+    await load({ baseUrl: 'https://unused.example.test/v1/systemone' }).get('session.compact')!($, { trigger: 'auto', messages: transcript() }, next);
+    expect(requests).toEqual([baseUrl]);
+    expect(summaries).toBe(1);
+    expect(logs[0]).toContain('fallback to built-in summary (Jev request failed (503)');
   });
 
   it('asks a headless host for compaction once, then leaves it to the engine', async () => {

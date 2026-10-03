@@ -35,6 +35,29 @@ sent to Jev carries the same history; since 0.3.0-astra.24 it is masked too (see
 
 ## What leaves for Jev
 
+### API key and a single destination
+
+`baseUrl` sets one full System One endpoint for the Claude Code hook and `JevClient`.
+The default is `https://api.typesafe.ai/v1/systemone`; the endpoint is neither inferred from
+the key's prefix nor replaced on failure. The API key is sent only to the configured endpoint;
+there is no cross-provider key fallback. Key sources are unchanged: `apiKey`, then
+`TYPESAFE_API_KEY` from the environment (the hook also reads it from settings). For a third-party
+endpoint, explicitly set its own key in `apiKey`: HTTPS alone does not make a server trusted.
+
+The shared `checkBaseUrl` in `src/request.ts` checks the endpoint before building a request;
+the `JevClient` constructor and the hook before compaction use it too. Absolute `https://`
+URLs with any host are allowed; `http://` is allowed only on `127.0.0.1`, `localhost` or
+`[::1]`, with or without a port. Non-loopback HTTP, other schemes, malformed URLs and userinfo
+are rejected with `baseUrl must be https:// or a loopback http:// URL`, without the URL or
+credentials in the error message. The hook falls back to the existing built-in summary, just
+as when the key is missing; it does not resend the key to another Jev provider.
+
+This is URL validation, not an allowlist of trusted HTTPS recipients. The body masking below
+does not hide the Authorization header's key from the selected server. Redirect policy for
+the injected transport and the host's `$.http.fetch` is the transport's responsibility;
+its network behavior has not been verified here. Do not configure an endpoint that redirects
+requests or forwards the key to a third party.
+
 Every compaction sends Jev a state: the conversation's texts and tool inputs (results are replaced by a short note).
 Before 0.3.0-astra.24 that state went out as is, so a key pasted into a prompt or written by a tool call reached the
 scoring service. Since astra.24 two layers mask it; the rules are adapted from upstream fast-jev-compaction#98

@@ -10,6 +10,11 @@
       "description": "TypeSafe API key. Leave unset to use TYPESAFE_API_KEY.",
       "sensitive": true
     },
+    "baseUrl": {
+      "type": "string",
+      "title": "System One endpoint",
+      "description": "Full URL of a System One-compatible service. Leave unset for https://api.typesafe.ai/v1/systemone. HTTPS or HTTP on 127.0.0.1, localhost or [::1]; no userinfo. Use the selected service's key."
+    },
     "keepThreshold": {
       "type": "number",
       "title": "Keep threshold",

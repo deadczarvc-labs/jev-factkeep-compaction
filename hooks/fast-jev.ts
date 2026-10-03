@@ -11,7 +11,7 @@ import type {
 import { compact, fullOutputNote, RAIL_FLOOR, reductionRatio, resolveOptions } from '../src/compact.js';
 import { redactSecrets } from '../src/secrets.js';
 import { estimateTokens, safeSlice } from '../src/state.js';
-import { buildJevRequest, DEFAULT_MODEL, parseJevResponse } from '../src/request.js';
+import { buildJevRequest, checkBaseUrl, DEFAULT_MODEL, parseJevResponse, SYSTEM_ONE_URL } from '../src/request.js';
 import type {
   CallAnswer,
   CompactOptions,
@@ -48,6 +48,7 @@ export type HookFetch = (url: string, init?: HookFetchInit) => Promise<HookFetch
 
 export type HookConfig = CompactOptions & {
   apiKey?: string;
+  baseUrl?: string;
   compactAtPercent: number;
   minReductionRatio: number;
   model: string;
@@ -91,16 +92,25 @@ export function resolveHookConfig(options: PluginOptions): HookConfig {
   };
   const apiKey = optionString(options, 'apiKey');
   if (apiKey) config.apiKey = apiKey;
+  const baseUrl = optionString(options, 'baseUrl');
+  if (baseUrl) config.baseUrl = baseUrl;
   const goal = optionString(options, 'goal');
   if (goal) config.goal = goal;
   return config;
 }
 
 /** A `JevAsker` over the engine's `$.http.fetch`. */
-export function jevAsker(fetchFn: HookFetch, apiKey: string, model: string): JevAsker {
+export function jevAsker(
+  fetchFn: HookFetch,
+  apiKey: string,
+  model: string,
+  baseUrl?: string,
+): JevAsker {
+  // Configuration errors trigger fallback even with no candidates or cached answers.
+  checkBaseUrl(baseUrl ?? SYSTEM_ONE_URL);
   return {
     async ask(state, questions) {
-      const request = buildJevRequest({ apiKey, model }, state, questions);
+      const request = buildJevRequest({ apiKey, model, baseUrl }, state, questions);
       const response = await fetchFn(request.url, {
         method: request.method,
         headers: request.headers,
@@ -248,7 +258,7 @@ export async function compactSession(
   offload?: { dir: string; fs: OffloadFs },
 ): Promise<SessionCompaction> {
   if (!config.apiKey) throw new Error('TYPESAFE_API_KEY is not configured');
-  const result = await compact(messages, jevAsker(fetchFn, config.apiKey, config.model), {
+  const result = await compact(messages, jevAsker(fetchFn, config.apiKey, config.model, config.baseUrl), {
     ...config,
     secrets: [config.apiKey],
     knownAnswers,

@@ -1,4 +1,4 @@
-import { buildJevRequest, parseJevResponse } from './request.js';
+import { buildJevRequest, checkBaseUrl, parseJevResponse, SYSTEM_ONE_URL } from './request.js';
 import type { JevAsker, JevQuestions, JevResponse, JevState } from './types.js';
 
 export interface JevClientOptions {
@@ -20,6 +20,7 @@ export class JevClient implements JevAsker {
   private readonly fetcher: typeof fetch;
 
   constructor(options: JevClientOptions = {}) {
+    checkBaseUrl(options.baseUrl ?? SYSTEM_ONE_URL);
     this.apiKey = options.apiKey ?? process.env.TYPESAFE_API_KEY ?? '';
     this.model = options.model;
     this.baseUrl = options.baseUrl;

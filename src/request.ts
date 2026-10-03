@@ -4,6 +4,25 @@ import type { JevAnswer, JevQuestions, JevResponse, JevState } from './types.js'
 export const SYSTEM_ONE_URL = 'https://api.typesafe.ai/v1/systemone';
 export const DEFAULT_MODEL = 'jev-latest';
 
+/** API key destination: HTTPS or an explicit loopback HTTP host, no userinfo. */
+export function checkBaseUrl(url: string): void {
+  const message = 'baseUrl must be https:// or a loopback http:// URL';
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    throw new Error(message);
+  }
+  const authority = /^https?:\/\/([^/?#]*)/i.exec(url)?.[1];
+  // Check the host as written, not a normalized IPv4 alias such as 127.1.
+  const loopbackHttp = parsed.protocol === 'http:' &&
+    /^(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?$/i.test(authority ?? '');
+  if (!authority || parsed.username || parsed.password || authority.includes('@') ||
+    !(parsed.protocol === 'https:' || loopbackHttp)) {
+    throw new Error(message);
+  }
+}
+
 export interface JevRequest {
   url: string;
   method: 'POST';
@@ -26,9 +45,11 @@ export function buildJevRequest(
   state: JevState,
   questions: JevQuestions,
 ): JevRequest {
+  const url = params.baseUrl ?? SYSTEM_ONE_URL;
+  checkBaseUrl(url);
   const arrayField = new WeakMap<object, string>();
   return {
-    url: params.baseUrl ?? SYSTEM_ONE_URL,
+    url,
     method: 'POST',
     headers: {
       authorization: `Bearer ${params.apiKey}`,

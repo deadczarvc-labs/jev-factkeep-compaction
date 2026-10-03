@@ -9,6 +9,7 @@ import {
   factLines,
   factStubText,
   buildJevRequest,
+  checkBaseUrl,
   collectToolCalls,
   compact,
   compactMessages,
@@ -739,5 +740,53 @@ describe('rails under a minimum reduction', () => {
     expect(text(out.messages, 'o0')).toBe(text(msgs, 'o0')); // Jev said keep
     expect(text(out.messages, 'o1')).toMatch(/evicted under context pressure|only fact lines kept/);
     expect(chars(out.messages)).toBeLessThan(before);
+  });
+});
+
+describe('base URL validation', () => {
+  const invalidUrlError = 'baseUrl must be https:// or a loopback http:// URL';
+  it.each([
+    'https://jev.example.test/v1/systemone', 'https://127.0.0.2:8443/decisions',
+    'http://127.0.0.1:8321/v1/systemone', 'http://localhost/v1/systemone', 'http://[::1]:8321/v1/systemone',
+  ])('keeps the validated endpoint and its key together: %s', async (baseUrl) => {
+    expect(() => checkBaseUrl(baseUrl)).not.toThrow();
+    const request = buildJevRequest({ apiKey: 'k', baseUrl }, 's', {});
+    expect(request.url).toBe(baseUrl);
+    expect(request.headers.authorization).toBe('Bearer k');
+    const urls: string[] = [];
+    const client = new JevClient({ apiKey: 'k', baseUrl, fetch: async (url, init) => {
+      urls.push(String(url));
+      expect(init?.headers).toEqual(request.headers);
+      return new Response('{"answers":{}}', { status: 200 });
+    } });
+    expect(await client.ask('s', {})).toEqual({ answers: {} });
+    expect(urls).toEqual([baseUrl]);
+  });
+  it.each([
+    '', 'not-a-url', '//jev.example.test/v1/systemone', 'https://', 'https:///jev.example.test',
+    'https:jev.example.test', 'https://jev.example.test:99999', 'file:///endpoint', 'ftp://localhost/endpoint',
+    'http://jev.example.test/endpoint', 'http://localhost.evil.test/endpoint', 'http://127.0.0.1.evil.test/endpoint',
+    'http://127.0.0.2/endpoint', 'http://127.1/endpoint', 'http://[::2]/endpoint',
+    'https://user:pass@jev.example.test/endpoint', 'https://:pass@jev.example.test/endpoint',
+    'https://user@jev.example.test/endpoint', 'https://@jev.example.test/endpoint', 'http://user:pass@localhost/endpoint',
+  ])('rejects unsafe endpoints in the builder and client: %s', (baseUrl) => {
+    expect(() => checkBaseUrl(baseUrl)).toThrow(invalidUrlError);
+    expect(() => buildJevRequest({ apiKey: 'k', baseUrl }, 's', {})).toThrow(invalidUrlError);
+    let requests = 0;
+    expect(() => new JevClient({ apiKey: 'k', baseUrl, fetch: async () => {
+      requests++;
+      return new Response('{"answers":{}}', { status: 200 });
+    } })).toThrow(invalidUrlError);
+    expect(requests).toBe(0);
+  });
+  it('does not retry the key at the default endpoint when a custom endpoint fails', async () => {
+    const baseUrl = 'https://jev.example.test/endpoint';
+    const urls: string[] = [];
+    const client = new JevClient({ apiKey: 'k', baseUrl, fetch: async (url) => {
+      urls.push(String(url));
+      return new Response('unavailable', { status: 503 });
+    } });
+    await expect(client.ask('s', {})).rejects.toThrow(/503/);
+    expect(urls).toEqual([baseUrl]);
   });
 });

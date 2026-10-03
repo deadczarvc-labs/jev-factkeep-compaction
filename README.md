@@ -176,13 +176,27 @@ The building blocks (`collectToolCalls`, `fitState`, `batchCalls`,
 `apiKey` defaults to `process.env.TYPESAFE_API_KEY`. Never commit the key or
 put it in a source file.
 
+### Jev endpoint and its API key
+
+`baseUrl` sets one full System One-compatible endpoint in both the library and the Claude Code
+plugin; the path is used as given, without a suffix. Leave it unset to keep
+`https://api.typesafe.ai/v1/systemone`. The API key is sent only to the configured endpoint:
+there is no automatic provider selection or cross-provider key fallback. For another service,
+set `apiKey` to that service's key, not an unrelated `TYPESAFE_API_KEY`.
+
+An absolute `https://` URL with any host is allowed; `http://` is allowed only on `127.0.0.1`,
+`localhost` or `[::1]` (with or without a port). Userinfo is not allowed. An invalid endpoint
+is rejected before the request; the hook falls back to the built-in summary, just as when the
+key is missing. HTTPS protects the transport but does not make the endpoint's owner trusted:
+the selected server receives the key and the masked conversation state. See [docs/security.md](docs/security.md).
+
 ## Options
 
 | Option | Default | Description |
 | --- | --- | --- |
 | `apiKey` | `TYPESAFE_API_KEY` | TypeSafe API key (`compactMessages`/`JevClient`) |
 | `model` | `jev-latest` | Jev model name |
-| `baseUrl` | `https://api.typesafe.ai/v1/systemone` | System One endpoint |
+| `baseUrl` | `https://api.typesafe.ai/v1/systemone` | Full System One-compatible endpoint; HTTPS or loopback HTTP, no userinfo (library and plugin) |
 | `fetch` | native `fetch` | Injectable fetch implementation for tests |
 | `goal` | last 3 user prompts | Ongoing task description included in the state |
 | `keepThreshold` | `0.5` | Minimum keep probability for a call or result to stay |
