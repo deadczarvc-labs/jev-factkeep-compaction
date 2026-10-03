@@ -16,6 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { budgetFor, buildDigest, compactionStats, contextWindow, parseRollout, SMALL_OUTPUT, v4SheetSelector } from '../src/codex.js';
 import { factLines } from '../src/compact.js';
 import { redactSecrets } from '../src/secrets.js';
+import { safeSlice } from '../src/state.js';
 
 const REPO = join(dirname(fileURLToPath(import.meta.url)), '..');
 const MAX_AGE_MS = 30 * 24 * 3600 * 1000;
@@ -66,7 +67,7 @@ export function run(input: HookInput, env: NodeJS.ProcessEnv = process.env): str
     for (const call of calls) {
       if (call.output.length <= SMALL_OUTPUT) continue;
       const file = join(dir, `${safe(call.id)}.txt`);
-      if (!existsSync(file)) writeFileSync(file, redactSecrets(call.output).slice(0, MAX_FILE), 'utf8');
+      if (!existsSync(file)) writeFileSync(file, safeSlice(redactSecrets(call.output), 0, MAX_FILE), 'utf8');
       saved.set(call.id, file);
     }
   }

@@ -10,7 +10,7 @@ import type {
 
 import { compact, fullOutputNote, RAIL_FLOOR, reductionRatio, resolveOptions } from '../src/compact.js';
 import { redactSecrets } from '../src/secrets.js';
-import { estimateTokens } from '../src/state.js';
+import { estimateTokens, safeSlice } from '../src/state.js';
 import { buildJevRequest, DEFAULT_MODEL, parseJevResponse } from '../src/request.js';
 import type {
   CallAnswer,
@@ -276,9 +276,9 @@ export async function saveForSummary(messages: readonly SessionMessage[], dir: s
     for (const message of messages as readonly Message[]) {
       for (const result of message.toolResults ?? []) {
         if (result.text.length < 200) continue;
-        await fs.write(`${dir}/${result.tool_use_id.replace(/[^\w.-]/g, '_')}.txt`, redactSecrets(result.text).slice(0, OFFLOAD_MAX_CHARS));
+        await fs.write(`${dir}/${result.tool_use_id.replace(/[^\w.-]/g, '_')}.txt`, safeSlice(redactSecrets(result.text), 0, OFFLOAD_MAX_CHARS));
         const use = uses.get(result.tool_use_id);
-        index.push(`${result.tool_use_id}\t${use?.tool ?? '?'}\t${redactSecrets(JSON.stringify(use?.input ?? {})).slice(0, 160)}\t${result.text.length} chars`);
+        index.push(`${result.tool_use_id}\t${use?.tool ?? '?'}\t${safeSlice(redactSecrets(JSON.stringify(use?.input ?? {})), 0, 160)}\t${result.text.length} chars`);
       }
     }
     if (index.length === 0) return undefined;
@@ -365,7 +365,7 @@ export async function offloadOutputs(
           await fs.write(`${root}/.gitignore`, '*\n');
           ignored = true;
         }
-        await fs.write(path, redactSecrets(text).slice(0, OFFLOAD_MAX_CHARS));
+        await fs.write(path, safeSlice(redactSecrets(text), 0, OFFLOAD_MAX_CHARS));
         results.push({ ...result, text: result.text.replace(note, `the full output is saved at ${path}; Read it for anything not kept here`) });
       } catch {
         results.push(result);
