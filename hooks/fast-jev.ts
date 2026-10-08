@@ -13,7 +13,8 @@ import { collectToolCalls, estimateTokens, safeSlice } from '../src/state.js';
 import { ESTIMATOR_ID, PROJECTION_ID, estimateDenseTokens, measureTranscript, type MeasureResult } from '../src/metrics.js';
 import { auditArgv, buildAuditEvent, canonicalContentChanged, classifyGate, finalizeMeasurements, normalizeObserved, observedCounters, parseAuditAck, serializeAuditEvent, type AuditEvent, type AuditIdentity, type AuditOutcome, type AuditErrorCode, type AuditSink } from '../src/audit.js';
 import { buildJevRequest, JevConfigError, JevRoundError, parseJevResponse } from '../src/request.js';
-import { requireJevApiKey, resolveJevEndpoint, selectJevApiKey, type JevProviderOptions, type ResolvedJevEndpoint } from '../src/providers.js';
+import { buildDecisionsRequest, parseDecisionsResponse } from '../src/decisions.js';
+import { requireJevApiKey, resolveJevEndpoint, selectJevApiKey, wireOf, type JevProviderOptions, type ResolvedJevEndpoint } from '../src/providers.js';
 import type {
   CallAnswer,
   CompactOptions,
@@ -27,7 +28,7 @@ import type {
 } from '../src/types.js';
 
 /** The running version, in every toast and log line (tests/hook.test.ts keeps it equal to plugin.json). */
-export const VERSION = '0.3.0-astra.29';
+export const VERSION = '0.3.0-astra.30';
 
 const HOOK_DEFAULTS = {
   compactAtPercent: 60,
@@ -159,8 +160,11 @@ export function jevAsker(
   return {
     async ask(state, questions, signal) {
       signal?.throwIfAborted();
+      const wire = wireOf(endpoint.provider);
+      const build = wire === 'decisions' ? buildDecisionsRequest : buildJevRequest;
+      const parse = wire === 'decisions' ? parseDecisionsResponse : parseJevResponse;
       const request = (() => {
-        try { return buildJevRequest({ apiKey, model: endpoint.model, baseUrl: endpoint.baseUrl }, state, questions); }
+        try { return build({ apiKey, model: endpoint.model, baseUrl: endpoint.baseUrl }, state, questions); }
         catch (error) { throw error instanceof JevConfigError ? error : new JevConfigError('request'); }
       })();
       if (observation) { try { observation.request(estimateDenseTokens(request.body)); } catch { /* Observation never controls HTTP. */ } }
@@ -173,7 +177,7 @@ export function jevAsker(
       const now = await nowMs();
       signal?.throwIfAborted();
       // The SDK buffers text and declares neither cancellation nor a network-error discriminator.
-      const parsed = parseJevResponse(response.status, response.ok, response.text, response.headers, now);
+      const parsed = parse(response.status, response.ok, response.text, response.headers, now);
       if (observation) { try { observation.usage(parsed.usage); } catch { /* Retain only numeric usage. */ } }
       return parsed;
     },

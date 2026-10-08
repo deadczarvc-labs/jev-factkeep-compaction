@@ -13,7 +13,7 @@ vi.mock('node:fs', async (importOriginal) => {
 
 const root = dirname(dirname(fileURLToPath(import.meta.url)));
 const readFile = vi.mocked(fs.readFileSync);
-const canonicalVersion = '0.3.0-astra.29';
+const canonicalVersion = '0.3.0-astra.30';
 const manifestAt = (name: string): Record<string, unknown> => JSON.parse(fs.readFileSync(join(root, '.codex-plugin', name), 'utf8'));
 const scratch: string[] = [];
 

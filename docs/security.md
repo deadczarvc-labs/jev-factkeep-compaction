@@ -40,11 +40,16 @@ sent to Jev carries the same history; since 0.3.0-astra.24 it is masked too (see
 `provider` defaults to `typesafe`, with full endpoint `https://api.typesafe.ai/v1/systemone` and
 only `TYPESAFE_API_KEY`. OpenRouter uses `https://openrouter.ai/api/v1/systemone` and only
 `OPENROUTER_API_KEY`; Vercel uses `https://ai-gateway.vercel.sh/typesafe/v1/systemone` and only
-`AI_GATEWAY_API_KEY`. Neither credentials, a token prefix nor a hostname selects a provider.
-All use the same redacting System One body and numeric `noul` response contract. There is no native
-evaluation adapter or automatic recipient, model or key switch after an error.
+`AI_GATEWAY_API_KEY`; liquid uses `https://api.liquid.ai/decisions/v1/systemone` and only
+`LIQUID_API_KEY`; solar uses `https://api.upstage.ai/v1/systemone` and only `UPSTAGE_API_KEY`;
+luna uses `https://api.openai.com/v1/decisions` and only `OPENAI_API_KEY`. Neither credentials,
+a token prefix nor a hostname selects a provider. All use the same redacting body (each wire
+masks through the same `jevMaskReplacer`) and the same numeric `noul` response contract after
+mapping; luna's Decisions wire maps `noul` questions onto `predicate` questions and omits a
+refusal instead of inventing a probability. There is no native evaluation adapter or automatic
+recipient, model or key switch after an error.
 
-OpenRouter, Vercel and remote custom endpoints require literal `allowThirdPartyEgress: true`,
+OpenRouter, Vercel, luna, liquid, solar and remote custom endpoints require literal `allowThirdPartyEgress: true`,
 after the final plugin options merge and before any key lookup or HTTP. Strings such as `"true"`
 are invalid. Consent permits sharing fitted history, goal and questions with the service and its
 model provider; masking does not remove all private, personal or commercial information. It makes

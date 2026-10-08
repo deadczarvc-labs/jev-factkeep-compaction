@@ -204,16 +204,20 @@ put it in a source file.
 
 ### Jev endpoint and its API key
 
-The library and Claude Code plugin share one explicit provider policy and the same System One
-builder/parser. `provider` defaults to `typesafe`; neither key presence, a token prefix nor a URL
-selects another provider. `allowThirdPartyEgress` defaults to `false`; only literal boolean `true`
-permits a third-party destination, before any credential lookup or HTTP.
+The library and Claude Code plugin share one explicit provider policy and one builder/parser per
+wire: System One for every named judge, the OpenAI Decisions API for `luna`. `provider` defaults
+to `typesafe`; neither key presence, a token prefix nor a URL selects another provider.
+`allowThirdPartyEgress` defaults to `false`; only literal boolean `true` permits a third-party
+destination, before any credential lookup or HTTP.
 
 | Provider | Full endpoint | Default model | Only ambient key | Third-party consent |
 | --- | --- | --- | --- | --- |
 | `typesafe` | `https://api.typesafe.ai/v1/systemone` | `jev-latest` | `TYPESAFE_API_KEY` | Not required for the existing default |
 | `openrouter` | `https://openrouter.ai/api/v1/systemone` | `jev-latest` | `OPENROUTER_API_KEY` | Required |
 | `vercel` | `https://ai-gateway.vercel.sh/typesafe/v1/systemone` | `typesafe-ai/jev` | `AI_GATEWAY_API_KEY` | Required |
+| `luna` | `https://api.openai.com/v1/decisions` | `gpt-6-luna` | `OPENAI_API_KEY` | Required |
+| `liquid` | `https://api.liquid.ai/decisions/v1/systemone` | `d1` | `LIQUID_API_KEY` | Required |
+| `solar` | `https://api.upstage.ai/v1/systemone` | `solar-decide` | `UPSTAGE_API_KEY` | Required |
 | `custom` | Explicit full System One-compatible URL | `jev-latest` | None; explicit `apiKey` only | Required except for explicit loopback |
 
 > OpenRouter and Vercel AI Gateway are disabled by default. Selecting `provider` together with
@@ -223,6 +227,15 @@ permits a third-party destination, before any credential lookup or HTTP.
 > No no-training, zero-retention or free-service guarantee is made. There is no automatic recipient or
 > credential switch. `baseUrl` is a full endpoint here, not an SDK prefix.
 
+`luna` is the OpenAI Decisions provider: it speaks `POST /v1/decisions` instead of System One, and
+the wire layer maps the compaction's `noul` questions onto Decisions `predicate` questions and the
+`answers` array back onto the same envelope. `liquid` (Liquid AI `d1`) and `solar` (Upstage Solar
+Decide) serve the System One contract from their own hosts; the `openrouter` provider also serves
+`upstage/solar-decide` and `liquid/d1` under the same `OPENROUTER_API_KEY`. A refusal is never
+fabricated into a probability: the question stays unanswered and follows the `partialAnswers`
+policy like any missing pair. **How to add a decider**: provider `custom` remains the escape
+hatch for any System One-compatible endpoint (local judges included).
+
 ```ts
 // TypeSafe default, unaffected by ambient OpenRouter/Gateway keys.
 await compactMessages(transcript, {});
@@ -230,11 +243,20 @@ await compactMessages(transcript, {});
 // Explicitly keep third-party routes off; also remove any foreign baseUrl/apiKey.
 await compactMessages(transcript, { provider: 'typesafe', allowThirdPartyEgress: false });
 
-// Requires OPENROUTER_API_KEY; compatible System One, not chat/completions or alpha Decisions.
+// Requires OPENROUTER_API_KEY; compatible System One (also serves upstage/solar-decide and liquid/d1).
 await compactMessages(transcript, { provider: 'openrouter', allowThirdPartyEgress: true });
 
 // Requires AI_GATEWAY_API_KEY; noul request/response, not the native evaluation API.
 await compactMessages(transcript, { provider: 'vercel', allowThirdPartyEgress: true });
+
+// Requires OPENAI_API_KEY; the Decisions wire, mapped onto the same questions (gpt-6-luna only).
+await compactMessages(transcript, { provider: 'luna', allowThirdPartyEgress: true });
+
+// Requires LIQUID_API_KEY; Liquid AI d1 on its own System One endpoint.
+await compactMessages(transcript, { provider: 'liquid', allowThirdPartyEgress: true });
+
+// Requires UPSTAGE_API_KEY; Upstage Solar Decide.
+await compactMessages(transcript, { provider: 'solar', allowThirdPartyEgress: true });
 
 // Explicit local proxy and its own key: no ambient key, no remote consent required.
 await compactMessages(transcript, {
@@ -247,8 +269,10 @@ Named providers accept only an absent `baseUrl` or their exact endpoint above: S
 alternate paths, ports, query/fragment additions and trailing slashes are rejected, not normalized.
 For example, the official SDK appends `/v1/systemone` to `https://openrouter.ai/api`; this builder
 appends nothing. Explicit models are preserved: TypeSafe accepts `jev-*`; OpenRouter also accepts
-`typesafe/jev-*` and `~typesafe/jev-latest`; Vercel accepts only `typesafe-ai/jev`. All models must be
-nonempty, at most 128 characters, and contain no whitespace or control characters.
+`typesafe/jev-*`, `~typesafe/jev-latest`, `upstage/solar-decide` and `liquid/d1`; Vercel accepts only
+`typesafe-ai/jev`; luna only `gpt-6-luna`; liquid `d1` with an optional `:tag`; solar only
+`solar-decide`. All models must be nonempty, at most 128 characters, and contain no whitespace or
+control characters.
 
 Migration from a generic remote `baseUrl` configuration is intentional: add `provider: 'custom'`,
 `allowThirdPartyEgress: true` and the service's explicit `apiKey`. A loopback configuration also needs
@@ -275,10 +299,10 @@ reuse is supported. Remove an old explicit `model: 'jev-latest'` when moving to 
 
 | Option | Default | Description |
 | --- | --- | --- |
-| `provider` | `typesafe` | `typesafe`, `openrouter`, `vercel` or `custom`; never inferred |
+| `provider` | `typesafe` | `typesafe`, `openrouter`, `vercel`, `luna`, `liquid`, `solar` or `custom`; never inferred |
 | `allowThirdPartyEgress` | `false` | Literal boolean opt-in for third-party history transfer |
 | `apiKey` | Selected provider's namespace | Key for the selected service; an empty value means unset; custom has no ambient fallback |
-| `model` | Provider-specific | `jev-latest`, except Vercel's `typesafe-ai/jev`; explicit values validated, never rewritten |
+| `model` | Provider-specific | `jev-latest`; `typesafe-ai/jev` (Vercel), `gpt-6-luna` (luna), `d1` (liquid), `solar-decide` (solar); explicit values validated, never rewritten |
 | `baseUrl` | Provider-specific | Exact full named endpoint, or explicit custom URL; HTTPS or written loopback HTTP, no userinfo |
 | `fetch` | native `fetch` | Injectable fetch implementation for tests |
 | `goal` | last 3 user prompts | Ongoing task description included in the state |

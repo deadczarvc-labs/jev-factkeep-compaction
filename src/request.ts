@@ -35,6 +35,27 @@ export interface JevRequest {
  * mask behind `compact`, which masks the history before cutting it, and the only one for a caller that builds its own
  * state. A JSON replacer keeps `toJSON` and the usual error on a cyclic value; `state` and `questions` are not changed.
  */
+/**
+ * The masking replacer both wires share: every string value is masked with its field name in view (`redactField`) and
+ * every object key with `redactForEgress`, the API key as a known value. A JSON replacer keeps `toJSON` and the usual
+ * error on a cyclic value. Split out so the Decisions builder masks exactly like the System One one.
+ */
+export function jevMaskReplacer(known: readonly string[]): (this: object, key: string, value: unknown) => unknown {
+  const arrayField = new WeakMap<object, string>();
+  return function (this: object, key: string, value: unknown) {
+    // JSON.stringify names an array element "0"; the field that holds the array is the name redactField needs.
+    const field = Array.isArray(this) ? (arrayField.get(this) ?? key) : key;
+    if (typeof value === 'string') return redactField(field, value, known);
+    if (Array.isArray(value)) arrayField.set(value, field);
+    if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;
+    // An object whose key is a secret comes back as a copy with masked keys (JSON.stringify then visits its values);
+    // any other object is returned as is, so the usual cycle check still applies.
+    const keys = Object.keys(value).map((k) => [k, redactForEgress(k, known)] as const);
+    if (keys.every(([k, masked]) => k === masked)) return value;
+    return Object.fromEntries(keys.map(([k, masked]) => [masked, (value as Record<string, unknown>)[k]]));
+  };
+}
+
 export function buildJevRequest(
   params: {
     apiKey: string;
@@ -46,7 +67,6 @@ export function buildJevRequest(
 ): JevRequest {
   const url = params.baseUrl ?? SYSTEM_ONE_URL;
   checkBaseUrl(url);
-  const arrayField = new WeakMap<object, string>();
   return {
     url,
     method: 'POST',
@@ -54,19 +74,7 @@ export function buildJevRequest(
       authorization: `Bearer ${params.apiKey}`,
       'content-type': 'application/json',
     },
-    body: JSON.stringify({ model: params.model ?? DEFAULT_MODEL, state, questions }, function (this: object, key: string, value: unknown) {
-      const known = [params.apiKey];
-      // JSON.stringify names an array element "0"; the field that holds the array is the name redactField needs.
-      const field = Array.isArray(this) ? (arrayField.get(this) ?? key) : key;
-      if (typeof value === 'string') return redactField(field, value, known);
-      if (Array.isArray(value)) arrayField.set(value, field);
-      if (value === null || typeof value !== 'object' || Array.isArray(value)) return value;
-      // An object whose key is a secret comes back as a copy with masked keys (JSON.stringify then visits its values);
-      // any other object is returned as is, so the usual cycle check still applies.
-      const keys = Object.keys(value).map((k) => [k, redactForEgress(k, known)] as const);
-      if (keys.every(([k, masked]) => k === masked)) return value;
-      return Object.fromEntries(keys.map(([k, masked]) => [masked, (value as Record<string, unknown>)[k]]));
-    }),
+    body: JSON.stringify({ model: params.model ?? DEFAULT_MODEL, state, questions }, jevMaskReplacer([params.apiKey])),
   };
 }
 

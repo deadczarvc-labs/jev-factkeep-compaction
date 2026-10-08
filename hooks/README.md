@@ -69,13 +69,16 @@ The plugin declares these `userConfig` values in
 | `maxConcurrentJevRequests` | `4` (integer `1..8`, a retry pause holds its slot) |
 | `partialAnswers` | `retain-unscored` (`rollback` rejects any incomplete round) |
 | `truncateHeadChars` | `200` |
-| `model` | Runtime provider default: `jev-latest`, or Vercel's `typesafe-ai/jev` |
+| `model` | Runtime provider default: `jev-latest`; `typesafe-ai/jev` (Vercel), `gpt-6-luna` (luna), `d1` (liquid), `solar-decide` (solar) |
 
 | Provider | Full endpoint | Default model | Only key namespace | Consent |
 | --- | --- | --- | --- | --- |
 | `typesafe` | `https://api.typesafe.ai/v1/systemone` | `jev-latest` | `TYPESAFE_API_KEY` | Existing default |
 | `openrouter` | `https://openrouter.ai/api/v1/systemone` | `jev-latest` | `OPENROUTER_API_KEY` | Required |
 | `vercel` | `https://ai-gateway.vercel.sh/typesafe/v1/systemone` | `typesafe-ai/jev` | `AI_GATEWAY_API_KEY` | Required |
+| `luna` | `https://api.openai.com/v1/decisions` | `gpt-6-luna` | `OPENAI_API_KEY` | Required |
+| `liquid` | `https://api.liquid.ai/decisions/v1/systemone` | `d1` | `LIQUID_API_KEY` | Required |
+| `solar` | `https://api.upstage.ai/v1/systemone` | `solar-decide` | `UPSTAGE_API_KEY` | Required |
 | `custom` | Explicit compatible System One URL | `jev-latest` | No ambient namespace; explicit `apiKey` only | Required except for written loopback |
 
 > OpenRouter and Vercel AI Gateway are disabled by default. `provider` together with
@@ -110,6 +113,16 @@ The OpenRouter example reads only `OPENROUTER_API_KEY`.
 
 The Gateway example reads only `AI_GATEWAY_API_KEY`; omit `model` or set `typesafe-ai/jev`.
 An old explicit `jev-latest` is rejected, not silently replaced.
+
+```json
+{ "provider": "luna", "allowThirdPartyEgress": true }
+```
+
+The luna example reads only `OPENAI_API_KEY` and speaks the OpenAI Decisions endpoint
+`POST /v1/decisions` (model `gpt-6-luna`): the wire layer maps the compaction's `noul` questions
+onto Decisions `predicate` questions and back; a refusal stays unanswered. `liquid`
+(`LIQUID_API_KEY`, model `d1`) and `solar` (`UPSTAGE_API_KEY`, model `solar-decide`) use their own
+System One hosts.
 
 ```json
 { "provider": "custom", "baseUrl": "http://127.0.0.1:8321/v1/systemone", "apiKey": "<local proxy key>" }

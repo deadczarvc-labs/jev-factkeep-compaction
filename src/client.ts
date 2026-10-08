@@ -1,5 +1,6 @@
 import { buildJevRequest, isNativeJevNetworkError, JevConfigError, JevHttpError, JevNetworkError, parseJevResponse, parseRetryAfter } from './request.js';
-import { requireJevApiKey, resolveJevEndpoint, selectJevApiKey, type JevProviderOptions, type ResolvedJevEndpoint } from './providers.js';
+import { buildDecisionsRequest, parseDecisionsResponse } from './decisions.js';
+import { requireJevApiKey, resolveJevEndpoint, selectJevApiKey, wireOf, type JevProviderOptions, type ResolvedJevEndpoint } from './providers.js';
 import type { JevAsker, JevQuestions, JevResponse, JevState } from './types.js';
 
 export interface JevClientOptions extends JevProviderOptions {
@@ -26,9 +27,12 @@ export class JevClient implements JevAsker {
   async ask(state: JevState, questions: JevQuestions, signal?: AbortSignal): Promise<JevResponse> {
     signal?.throwIfAborted();
     const apiKey = requireJevApiKey(this.endpoint, this.apiKey);
+    const wire = wireOf(this.endpoint.provider);
+    const build = wire === 'decisions' ? buildDecisionsRequest : buildJevRequest;
+    const parse = wire === 'decisions' ? parseDecisionsResponse : parseJevResponse;
     const request = (() => {
       try {
-        return buildJevRequest({ apiKey, model: this.endpoint.model, baseUrl: this.endpoint.baseUrl }, state, questions);
+        return build({ apiKey, model: this.endpoint.model, baseUrl: this.endpoint.baseUrl }, state, questions);
       } catch (error) {
         throw error instanceof JevConfigError ? error : new JevConfigError('request');
       }
@@ -64,6 +68,6 @@ export class JevClient implements JevAsker {
       throw error;
     }
     signal?.throwIfAborted();
-    return parseJevResponse(response.status, response.ok, text, response.headers);
+    return parse(response.status, response.ok, text, response.headers);
   }
 }

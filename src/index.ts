@@ -1,5 +1,6 @@
 export * from './types.js';
 export * from './request.js';
+export * from './decisions.js';
 export * from './providers.js';
 export * from './client.js';
 export * from './state.js';
