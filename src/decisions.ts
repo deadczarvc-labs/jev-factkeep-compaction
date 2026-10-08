@@ -25,8 +25,10 @@ type DecisionsQuestion =
 export function decisionsQuestions(questions: JevQuestions): DecisionsQuestion[] {
   return Object.entries(questions).map(([name, q]): DecisionsQuestion => {
     if (q.type === 'noul') {
+      // Newlines, not an inline run-on: "…is about True when: …" read as one broken sentence and
+      // gpt-6-luna answered the subject gate False 3/3; the separated form answers 0.89 (live probe).
       const criteria = q.criteria && (q.criteria.true !== undefined || q.criteria.false !== undefined)
-        ? ` True when: ${q.criteria.true ?? 'the condition holds'}. False when: ${q.criteria.false ?? 'it does not'}.`
+        ? `\nTrue when: ${q.criteria.true ?? 'the condition holds'}.\nFalse when: ${q.criteria.false ?? 'it does not'}.`
         : '';
       return { type: 'predicate', name, instructions: q.instructions + criteria };
     }
