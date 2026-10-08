@@ -7,7 +7,7 @@
     "provider": {
       "type": "string",
       "title": "Jev provider",
-      "description": "typesafe, openrouter, vercel or custom. Never inferred from credentials or baseUrl.",
+      "description": "typesafe, openrouter, vercel, luna, liquid, solar or custom. luna is the OpenAI Decisions API (gpt-6-luna), liquid is Liquid AI d1, solar is Upstage Solar Decide; custom takes any System One endpoint. Never inferred from credentials or baseUrl.",
       "default": "typesafe"
     },
     "allowThirdPartyEgress": {
@@ -19,7 +19,7 @@
     "apiKey": {
       "type": "string",
       "title": "Selected service API key",
-      "description": "Key issued for the selected service. Otherwise use only TYPESAFE_API_KEY, OPENROUTER_API_KEY or AI_GATEWAY_API_KEY for its provider; custom requires an explicit key.",
+      "description": "Key issued for the selected service. Otherwise use only TYPESAFE_API_KEY, OPENROUTER_API_KEY, AI_GATEWAY_API_KEY, OPENAI_API_KEY, LIQUID_API_KEY or UPSTAGE_API_KEY for its provider; custom requires an explicit key.",
       "sensitive": true
     },
     "baseUrl": {
@@ -96,7 +96,7 @@
     "model": {
       "type": "string",
       "title": "Jev model",
-      "description": "Leave unset for the provider default: jev-latest for typesafe/openrouter/custom, typesafe-ai/jev for vercel. Explicit values are validated and never rewritten."
+      "description": "Leave unset for the provider default: jev-latest for typesafe/openrouter/custom, typesafe-ai/jev for vercel, gpt-6-luna for luna, d1 for liquid, solar-decide for solar. Explicit values are validated and never rewritten."
     },
     "auditLog": {
       "type": "boolean",
