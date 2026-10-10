@@ -1,6 +1,6 @@
 {
   "name": "fast-jev-compaction",
-  "version": "0.3.0-astra.30",
+  "version": "0.3.0-astra.31",
   "description": "Restore locally recovered tool-output facts after Codex compaction, without a Jev request.",
   "author": {
     "name": "deadczarvc",
