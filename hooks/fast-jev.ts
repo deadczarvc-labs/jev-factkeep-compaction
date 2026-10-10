@@ -592,6 +592,9 @@ async function getApiKey(
     case 'TYPESAFE_API_KEY': fromEnv = await $.env.get('TYPESAFE_API_KEY'); break;
     case 'OPENROUTER_API_KEY': fromEnv = await $.env.get('OPENROUTER_API_KEY'); break;
     case 'AI_GATEWAY_API_KEY': fromEnv = await $.env.get('AI_GATEWAY_API_KEY'); break;
+    case 'OPENAI_API_KEY': fromEnv = await $.env.get('OPENAI_API_KEY'); break;
+    case 'LIQUID_API_KEY': fromEnv = await $.env.get('LIQUID_API_KEY'); break;
+    case 'UPSTAGE_API_KEY': fromEnv = await $.env.get('UPSTAGE_API_KEY'); break;
   }
   if (fromEnv) return fromEnv;
   const settings = await $.settings.read();
