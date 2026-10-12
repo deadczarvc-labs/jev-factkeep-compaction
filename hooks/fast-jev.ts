@@ -14,7 +14,7 @@ import { ESTIMATOR_ID, PROJECTION_ID, estimateDenseTokens, measureTranscript, ty
 import { auditArgv, buildAuditEvent, canonicalContentChanged, classifyGate, finalizeMeasurements, normalizeObserved, observedCounters, parseAuditAck, serializeAuditEvent, type AuditEvent, type AuditIdentity, type AuditOutcome, type AuditErrorCode, type AuditSink } from '../src/audit.js';
 import { buildJevRequest, JevConfigError, JevRoundError, parseJevResponse } from '../src/request.js';
 import { buildDecisionsRequest, parseDecisionsResponse } from '../src/decisions.js';
-import { requireJevApiKey, resolveJevEndpoint, selectJevApiKey, wireOf, type JevProviderOptions, type ResolvedJevEndpoint } from '../src/providers.js';
+import { maxQuestionsOf, requireJevApiKey, resolveJevEndpoint, selectJevApiKey, wireOf, type JevProviderOptions, type ResolvedJevEndpoint } from '../src/providers.js';
 import type {
   CallAnswer,
   CompactOptions,
@@ -28,7 +28,7 @@ import type {
 } from '../src/types.js';
 
 /** The running version, in every toast and log line (tests/hook.test.ts keeps it equal to plugin.json). */
-export const VERSION = '0.3.0-astra.31';
+export const VERSION = '0.3.0-astra.32';
 
 const HOOK_DEFAULTS = {
   compactAtPercent: 60,
@@ -158,6 +158,7 @@ export function jevAsker(
   // Configuration errors trigger fallback even with no candidates or cached answers.
   requireJevApiKey(endpoint, apiKey);
   return {
+    maxQuestions: maxQuestionsOf(endpoint.provider),
     async ask(state, questions, signal) {
       signal?.throwIfAborted();
       const wire = wireOf(endpoint.provider);

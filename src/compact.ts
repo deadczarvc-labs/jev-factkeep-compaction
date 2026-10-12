@@ -98,23 +98,30 @@ export function questionsFor(call: ToolCall): JevQuestions {
 
 /**
  * Splits the candidate calls into batches whose questions, together with the
- * (always complete) state, fit one request.
+ * (always complete) state, fit one request, with at most `maxQuestions` questions each (the wire's cap).
  */
 export function batchCalls(
   calls: readonly ToolCall[],
   stateTokens: number,
   options: Pick<ResolvedCompactOptions, 'maxRequestTokens'>,
+  maxQuestions = Number.POSITIVE_INFINITY,
 ): ToolCall[][] {
+  // One call asks two questions; a smaller (or NaN) cap would silently send oversized batches.
+  if (!(maxQuestions >= 2)) throw new RangeError('maxQuestions must be at least 2');
   const budget = options.maxRequestTokens - stateTokens - REQUEST_OVERHEAD_TOKENS;
   const batches: ToolCall[][] = [];
   let current: ToolCall[] = [];
   let currentTokens = 0;
+  let currentQuestions = 0;
   for (const call of calls) {
-    const tokens = estimateTokens(JSON.stringify(questionsFor(call)));
-    if (current.length > 0 && currentTokens + tokens > budget) {
+    const questions = questionsFor(call);
+    const tokens = estimateTokens(JSON.stringify(questions));
+    const count = Object.keys(questions).length;
+    if (current.length > 0 && (currentTokens + tokens > budget || currentQuestions + count > maxQuestions)) {
       batches.push(current);
       current = [];
       currentTokens = 0;
+      currentQuestions = 0;
     }
     if (current.length === 0 && tokens > budget) {
       throw new Error(
@@ -123,6 +130,7 @@ export function batchCalls(
     }
     current.push(call);
     currentTokens += tokens;
+    currentQuestions += count;
   }
   if (current.length > 0) batches.push(current);
   return batches;
@@ -956,7 +964,7 @@ export async function compact(
   if (candidates.length > 0) {
     const { groups, floor, stage } = stateGroups(messages, calls, candidates, resolved, options.secrets);
     fitted = { tokens: Math.max(0, ...groups.map((g) => g.state.tokens)), stage };
-    const jobs = groups.flatMap((g) => batchCalls(g.calls, g.state.tokens, resolved).map((batch) => ({ state: g.state.state, batch })));
+    const jobs = groups.flatMap((g) => batchCalls(g.calls, g.state.tokens, resolved, asker.maxQuestions).map((batch) => ({ state: g.state.state, batch })));
     requests = jobs.length;
     if (jobs.length > 0) {
       const snapshot = await runRoundJobs(asker, jobs, { ...options, ...resolved });

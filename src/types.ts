@@ -275,4 +275,6 @@ export interface JevResponse {
 /** Anything that can answer Jev questions: `JevClient`, or a host-provided adapter. */
 export interface JevAsker {
   ask(state: JevState, questions: JevQuestions, signal?: AbortSignal): Promise<JevResponse>;
+  /** Most questions one request may carry (the wire's limit); batches are split to fit. Unset means no limit. */
+  readonly maxQuestions?: number;
 }

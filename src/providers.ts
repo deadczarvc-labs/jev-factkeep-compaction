@@ -1,5 +1,5 @@
 import { checkBaseUrl, DEFAULT_MODEL, JevConfigError, SYSTEM_ONE_URL } from './request.js';
-import { DECISIONS_MODEL, OPENAI_DECISIONS_URL } from './decisions.js';
+import { DECISIONS_MAX_QUESTIONS, DECISIONS_MODEL, OPENAI_DECISIONS_URL } from './decisions.js';
 
 export const OPENROUTER_SYSTEM_ONE_URL = 'https://openrouter.ai/api/v1/systemone';
 export const VERCEL_SYSTEM_ONE_URL = 'https://ai-gateway.vercel.sh/typesafe/v1/systemone';
@@ -115,4 +115,9 @@ export type JevWire = 'systemone' | 'decisions';
 
 export function wireOf(provider: JevProvider): JevWire {
   return provider === 'luna' ? 'decisions' : 'systemone';
+}
+
+/** The wire's cap on questions per request; System One states none. */
+export function maxQuestionsOf(provider: JevProvider): number | undefined {
+  return wireOf(provider) === 'decisions' ? DECISIONS_MAX_QUESTIONS : undefined;
 }

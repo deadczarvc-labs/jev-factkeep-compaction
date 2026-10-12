@@ -195,6 +195,9 @@ can be passed in as is.
 To bring your own transport, implement `JevAsker` (one `ask(state, questions)`
 method) and call `compact(messages, asker, options)`; `buildJevRequest` and
 `parseJevResponse` give you the HTTP request body and response validation.
+A transport whose wire caps questions per request sets `maxQuestions` on the
+asker: an OpenAI Decisions (luna) adapter sets `DECISIONS_MAX_QUESTIONS` (200),
+otherwise a long history gets a 400 `array_above_max_length`.
 The building blocks (`collectToolCalls`, `fitState`, `batchCalls`,
 `decideCall`, `applyDecisions`) are exported too.
 

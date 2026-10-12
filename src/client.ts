@@ -1,6 +1,6 @@
 import { buildJevRequest, isNativeJevNetworkError, JevConfigError, JevHttpError, JevNetworkError, parseJevResponse, parseRetryAfter } from './request.js';
 import { buildDecisionsRequest, parseDecisionsResponse } from './decisions.js';
-import { requireJevApiKey, resolveJevEndpoint, selectJevApiKey, wireOf, type JevProviderOptions, type ResolvedJevEndpoint } from './providers.js';
+import { maxQuestionsOf, requireJevApiKey, resolveJevEndpoint, selectJevApiKey, wireOf, type JevProviderOptions, type ResolvedJevEndpoint } from './providers.js';
 import type { JevAsker, JevQuestions, JevResponse, JevState } from './types.js';
 
 export interface JevClientOptions extends JevProviderOptions {
@@ -16,9 +16,11 @@ export class JevClient implements JevAsker {
   private readonly endpoint: ResolvedJevEndpoint;
   private readonly fetcher: typeof fetch;
   private readonly closeNativeConnection: boolean;
+  readonly maxQuestions: number | undefined;
 
   constructor(options: JevClientOptions = {}) {
     this.endpoint = resolveJevEndpoint(options);
+    this.maxQuestions = maxQuestionsOf(this.endpoint.provider);
     this.apiKey = selectJevApiKey(this.endpoint, options.apiKey, process.env);
     this.fetcher = options.fetch ?? fetch;
     this.closeNativeConnection = options.fetch === undefined;

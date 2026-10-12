@@ -11,6 +11,8 @@ import type { JevAnswer, JevQuestions, JevResponse, JevState } from './types.js'
 export const OPENAI_DECISIONS_URL = 'https://api.openai.com/v1/decisions';
 /** The only model the Decisions public beta serves (2026-10-08). */
 export const DECISIONS_MODEL = 'gpt-6-luna';
+/** `questions` longer than this is a 400 `array_above_max_length` (live, 2026-10-12: 216 and 220 refused). */
+export const DECISIONS_MAX_QUESTIONS = 200;
 
 type DecisionsQuestion =
   | { type: 'predicate'; name: string; instructions: string }
